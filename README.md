@@ -5,9 +5,9 @@ Reusable Model Context API routers for Django Ninja and Pydantic applications.
 Install optional integrations only when needed:
 
 ```bash
-pip install mca
-pip install "mca[ninja]"
-pip install "mca[mcp]"
+pip install model-context-api
+pip install "model-context-api[ninja]"
+pip install "model-context-api[mcp]"
 ```
 
 Import adapter classes from `mca.pydantic`, `mca.ninja`, and `mca.mcp`; import
