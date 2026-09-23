@@ -3,7 +3,7 @@ name = "model-context-api"
 version = "0.1.0"
 description = "Model Context API for AI Agents"
 readme = "README.md"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 
 dependencies = [
     "pydantic>=2.13.5",

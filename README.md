@@ -92,7 +92,7 @@ python -m pip install "model-context-api[ninja,mcp]"
 The ninja extra installs Django and Django Ninja. The mcp extra installs the
 MCP Python SDK. Applications using MCP normally install both extras.
 
-The package requires Python 3.13 or newer.
+The package requires Python 3.12 or newer.
 
 ## The MCA model
 
