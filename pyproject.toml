@@ -25,3 +25,8 @@ build-backend = "uv_build"
 [tool.uv.build-backend]
 module-name = "mca"
 module-root = ""
+
+[dependency-groups]
+dev = [
+    "pre-commit>=4.6.2",
+]
