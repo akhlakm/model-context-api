@@ -26,6 +26,23 @@ class MockJsonRpcClient:
         guide: str | None = None,
         operation: str | None = None,
     ) -> Any:
+        return self._discover(guide=guide, operation=operation)
+
+    async def adiscover(
+        self,
+        *,
+        guide: str | None = None,
+        operation: str | None = None,
+    ) -> Any:
+        """Asynchronously discover the private router through mock RPC."""
+        return self._discover(guide=guide, operation=operation)
+
+    def _discover(
+        self,
+        *,
+        guide: str | None,
+        operation: str | None,
+    ) -> Any:
         self.calls.append({"method": "get_mca", "guide": guide, "operation": operation})
         return _json_value(
             self.router.dispatch(
@@ -40,6 +57,25 @@ class MockJsonRpcClient:
         *,
         params: dict[str, Any] | None = None,
         data: Any = None,
+    ) -> Any:
+        return self._call(operation, params=params, data=data)
+
+    async def acall(
+        self,
+        operation: str,
+        *,
+        params: dict[str, Any] | None = None,
+        data: Any = None,
+    ) -> Any:
+        """Asynchronously call a private operation through mock RPC."""
+        return self._call(operation, params=params, data=data)
+
+    def _call(
+        self,
+        operation: str,
+        *,
+        params: dict[str, Any] | None,
+        data: Any,
     ) -> Any:
         self.calls.append(
             {"method": operation, "params": params, "data": data}

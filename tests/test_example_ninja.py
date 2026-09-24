@@ -1,7 +1,7 @@
 import json
 import sys
 from pathlib import Path
-from unittest import TestCase
+from unittest import IsolatedAsyncioTestCase, TestCase
 
 from django.conf import settings
 
@@ -271,4 +271,29 @@ class NinjaCompositionExampleTests(TestCase):
                 "detail": "Field required",
                 "field": "total",
             },
+        )
+
+
+class NinjaCompositionExampleAsyncTests(IsolatedAsyncioTestCase):
+    async def test_async_rpc_methods_match_sync_client_behavior(self):
+        billing_rpc.calls.clear()
+
+        discovery = await billing_rpc.adiscover(operation="make_invoice")
+        result = await billing_rpc.acall(
+            "make_invoice",
+            data={"customer": "Async Customer", "total": 18.5},
+        )
+
+        self.assertIn("make_invoice", discovery["operations"])
+        self.assertEqual(result["customer"], "Async Customer")
+        self.assertEqual(
+            billing_rpc.calls,
+            [
+                {"method": "get_mca", "guide": None, "operation": "make_invoice"},
+                {
+                    "method": "make_invoice",
+                    "params": None,
+                    "data": {"customer": "Async Customer", "total": 18.5},
+                },
+            ],
         )

@@ -432,7 +432,8 @@ when methods have different request or response models.
 The same explicit composition pattern applies to both adapters. A public
 router can mount private MCA services through a small client adapter. The
 client can use JSON-RPC, HTTP, or another transport; it only needs to provide
-`discover()` and `call()` methods.
+`discover()` and `call()` methods. Clients used by asynchronous handlers can
+also provide `adiscover()` and `acall()` as explicit async counterparts.
 
 When discovery needs schemas for multiple delegated operations, the public
 router batches the missing operation names into one `get_mca` request per
@@ -457,6 +458,18 @@ class JsonRpcMCAClient:
 
     def call(self, operation, *, params=None, data=None):
         return self.rpc.call(
+            "mca.dispatch",
+            {"operation": operation, "params": params, "data": data},
+        )
+
+    async def adiscover(self, *, guide=None, operation=None):
+        return await self.acall(
+            "get_mca",
+            params={"guide": guide, "operation": operation},
+        )
+
+    async def acall(self, operation, *, params=None, data=None):
+        return await self.rpc.call(
             "mca.dispatch",
             {"operation": operation, "params": params, "data": data},
         )

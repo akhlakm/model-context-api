@@ -19,7 +19,8 @@ class MCAClient(Protocol):
     """Client boundary used by a public router to reach a private MCA service.
 
     Implementations may use HTTP, JSON-RPC, a message bus, or an in-process
-    adapter. The public router only depends on these two operations.
+    adapter. Synchronous composition uses ``discover`` and ``call``; async
+    handlers can use their ``adiscover`` and ``acall`` counterparts.
     """
 
     def discover(
@@ -54,6 +55,37 @@ class MCAClient(Protocol):
             MCAError: When the mounted service reports an operation failure.
         """
 
+    async def adiscover(
+        self,
+        *,
+        guide: str | None = None,
+        operation: str | None = None,
+    ) -> Any:
+        """Asynchronously return a remote ``get_mca`` response.
+
+        This is the async counterpart to :meth:`discover`. The values use the
+        same batched guide and operation format.
+
+        Raises:
+            MCAError: When the mounted service reports a discovery failure.
+        """
+
+    async def acall(
+        self,
+        operation: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        data: Any = None,
+    ) -> Any:
+        """Asynchronously call a remote operation.
+
+        This is the async counterpart to :meth:`call`; transports should
+        await their underlying network or RPC request here.
+
+        Raises:
+            MCAError: When the mounted service reports an operation failure.
+        """
+
 
 class MCACompositionMixin:
     """Add explicit private-router composition to a concrete MCA adapter.
@@ -78,6 +110,8 @@ class MCACompositionMixin:
         target. Mounting alone does not expose or merge any private operation.
 
         The client must provide callable ``discover`` and ``call`` methods.
+        Async clients may additionally provide ``adiscover`` and ``acall``
+        for use by asynchronous public handlers.
         """
         if not isinstance(namespace, str) or self._namespace_pattern.fullmatch(namespace) is None:
             raise ValueError(
