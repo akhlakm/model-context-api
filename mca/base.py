@@ -40,7 +40,11 @@ class GuideCatalog:
 
     def available(self) -> list[str]:
         return (
-            sorted(path.name for path in self.root.glob("*.md") if path.is_file())
+            sorted(
+                path.relative_to(self.root).as_posix()
+                for path in self.root.rglob("*.md")
+                if path.is_file()
+            )
             if self.root is not None and self.root.is_dir()
             else []
         )

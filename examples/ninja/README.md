@@ -34,6 +34,7 @@ Inspect public discovery:
 curl http://127.0.0.1:8000/api/
 curl 'http://127.0.0.1:8000/api/?operation=get_public_invoice,make_public_invoice,update_public_invoice,remove_public_invoice'
 curl 'http://127.0.0.1:8000/api/?guide=billing/invoices.md'
+curl 'http://127.0.0.1:8000/api/?guide=billing/invoices/legacy_format.md'
 ```
 
 Call the public GET operation with the demo token:

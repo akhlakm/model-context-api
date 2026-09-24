@@ -48,6 +48,10 @@ class NinjaCompositionExampleTests(TestCase):
         )
         self.assertNotIn("billing.get_invoice", discovery["available_operations"])
         self.assertIn("billing/invoices.md", discovery["available_guides"])
+        self.assertIn(
+            "billing/invoices/legacy_format.md",
+            discovery["available_guides"],
+        )
         self.assertNotIn("billing/index.md", discovery["available_guides"])
 
         expected_routes = {
@@ -63,6 +67,16 @@ class NinjaCompositionExampleTests(TestCase):
                 for name, schema in details["operations"].items()
             },
             expected_routes,
+        )
+
+        nested_guide = public_mca._get_mca(
+            "billing/invoices/legacy_format.md",
+            None,
+        )
+        self.assertEqual(
+            nested_guide["guides"]["billing/invoices/legacy_format.md"],
+            "# Legacy invoice format\n\n"
+            "Legacy clients may request invoice fields using the compatibility format.\n",
         )
 
     def test_public_discovery_composes_private_schemas_and_caches_them(self):

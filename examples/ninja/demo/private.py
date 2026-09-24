@@ -45,7 +45,7 @@ private_router = PydanticMCARouter(
 
 @private_router.register(
     "/private/invoices/{invoice_id}",
-    guides=["invoices.md"],
+    guides=["invoices.md", "invoices/legacy_format.md"],
 )
 def get_invoice(params: InvoiceParams) -> InvoiceOut:
     """Read an invoice from the private billing service."""

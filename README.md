@@ -194,8 +194,13 @@ myapp/
 └── guides/
     ├── index.md
     ├── items.md
+    ├── invoices/
+    │   └── legacy_format.md
     └── workflows.md
 ~~~
+
+Guide names are paths relative to `guides_dir`, using `/` separators. Nested
+guides can be requested with names such as `invoices/legacy_format.md`.
 
 With guides enabled, the root discovery response returns the registry metadata,
 index content, available guide names, and a map of available operations. Guide
