@@ -1,6 +1,8 @@
+import json
 from pathlib import Path
 
 from django.conf import settings
+from django.test import RequestFactory
 
 if not settings.configured:
     settings.configure(
@@ -14,6 +16,8 @@ import django
 django.setup()
 
 from unittest import TestCase
+
+from ninja import NinjaAPI, Router
 
 from mca.ninja import NinjaMCARouter
 
@@ -131,3 +135,37 @@ class NinjaMCARouterPackageTests(TestCase):
         self.assertNotIn("guides", guided)
         documented_call = next(call for call in api.calls if call[2].get("operation_id") == "get_documented")
         self.assertEqual(documented_call[2]["description"], "Read documented data.")
+
+    def test_router_backed_registry_supports_schema_and_execution(self):
+        def authenticate(request):
+            return "allowed" if getattr(request, "_mca_allow_anonymous", False) else None
+
+        api_router = Router(auth=authenticate)
+        registry = NinjaMCARouter(api_router)
+
+        @registry.register("/items/{item_id}", response=dict)
+        def get_item(request, item_id: int):
+            return {"item_id": item_id}
+
+        root_api = NinjaAPI()
+        root_api.add_router("/v1", api_router)
+        schema = registry._route_schema(registry.route("get_item"))
+        root_schema = root_api.get_openapi_schema(path_prefix="")
+        request = RequestFactory().get("/items/7")
+        denied_response = registry.execute_http(
+            "get_item",
+            request,
+            path_params={"item_id": 7},
+        )
+        response = registry.execute_http(
+            "get_item",
+            request,
+            path_params={"item_id": 7},
+            allow_anonymous=True,
+        )
+
+        self.assertEqual(schema["route"], "GET items/{item_id}")
+        self.assertIn("/v1/items/{item_id}", root_schema["paths"])
+        self.assertEqual(denied_response.status_code, 401)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content), {"item_id": 7})

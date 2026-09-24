@@ -13,7 +13,7 @@ from urllib.parse import quote, urlencode
 
 from django.http import HttpRequest
 from django.http.response import HttpResponseBase
-from ninja import Query
+from ninja import NinjaAPI, Query, Router
 
 from .base import BaseMCARouter, MCAError, RegisteredRoute
 from .models import MCADiscoveryOut, MCAResponseOut
@@ -54,6 +54,7 @@ class NinjaMCARouter(BaseMCARouter):
         error_responses: Mapping[int, Any] | None = None,
     ):
         self.api = api
+        self._bound_api: NinjaAPI | None = None
         self.error_responses = error_responses or {}
         super().__init__(
             guides_dir=guides_dir,
@@ -184,7 +185,8 @@ class NinjaMCARouter(BaseMCARouter):
         )
 
     def _ninja_operation(self, operation: str) -> Any:
-        for bound_router in self.api._get_bound_routers():
+        api = self._operation_api()
+        for bound_router in api._get_bound_routers():
             for path_view in bound_router.path_operations.values():
                 for ninja_operation in path_view.operations:
                     if ninja_operation.operation_id == operation:
@@ -197,8 +199,21 @@ class NinjaMCARouter(BaseMCARouter):
     def _get_mca(self, guide: str | None, operation_name: str | None):
         return self.discovery(guide, operation_name, self._route_schema)
 
+    def _operation_api(self) -> Any:
+        if not isinstance(self.api, Router):
+            return self.api
+        if self._bound_api is None:
+            self._bound_api = NinjaAPI(default_router=self.api)
+        return self._bound_api
+
+    def _openapi_schema(self) -> dict[str, Any]:
+        api = self._operation_api()
+        if isinstance(self.api, Router):
+            return api.get_openapi_schema(path_prefix="")
+        return api.get_openapi_schema()
+
     def _openapi_operation(self, name: str) -> dict[str, Any] | None:
-        schema = self.api.get_openapi_schema()
+        schema = self._openapi_schema()
         for path_data in schema.get("paths", {}).values():
             for operation in path_data.values():
                 if isinstance(operation, dict) and operation.get("operationId") == name:
@@ -217,7 +232,7 @@ class NinjaMCARouter(BaseMCARouter):
                 404,
             )
 
-        openapi_schema = self.api.get_openapi_schema()
+        openapi_schema = self._openapi_schema()
         components = openapi_schema.get("components", {}).get("schemas", {})
         path_properties: dict[str, Any] = {}
         path_required: list[str] = []

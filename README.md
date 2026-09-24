@@ -413,14 +413,20 @@ when methods have different request or response models.
 
 ## Django Ninja APIs
 
-Use NinjaMCARouter to register operations directly on a NinjaAPI. Options such
-as response, auth, tags, and other Django Ninja route options are passed
-through to the corresponding API method.
+Use NinjaMCARouter to register operations on either a NinjaAPI or a Django
+Ninja Router. Options such as response, auth, tags, and other Django Ninja
+route options are passed through to the corresponding registration method.
+
+When a Router is supplied, its own auth and throttle configuration is used for
+MCA schema discovery and internal execution. The Router can then be mounted on
+a root NinjaAPI with `api.add_router(...)`; MCA does not require that root API
+to generate operation schemas.
 
 This adapter is for an existing HTTP API. It does not create a second business
 logic layer: the decorated functions remain ordinary Django Ninja endpoints.
 MCA adds the shared discovery operation, guide access, operation descriptions,
-and a schema view assembled from Django Ninja's OpenAPI metadata.
+and a schema view assembled from Django Ninja's OpenAPI metadata. Router-backed
+registries bind lazily to an internal NinjaAPI for this metadata and execution.
 
 ~~~python
 # myapp/api.py
