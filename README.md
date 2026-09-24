@@ -194,8 +194,13 @@ myapp/
 └── guides/
     ├── index.md
     ├── items.md
+    ├── invoices/
+    │   └── legacy_format.md
     └── workflows.md
 ~~~
+
+Guide names are paths relative to `guides_dir`, using `/` separators. Nested
+guides can be requested with names such as `invoices/legacy_format.md`.
 
 With guides enabled, the root discovery response returns the registry metadata,
 index content, available guide names, and a map of available operations. Guide
@@ -292,6 +297,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from mca.base import MCAError
 from mca.pydantic import PydanticMCARouter
 
 
@@ -388,17 +394,17 @@ item = router.dispatch("/items/7", params={"verbose": True}, method="GET")
 ~~~
 
 Inputs are validated before an endpoint is called, and results are validated
-against return annotations. Invalid requests, unknown operations, unknown
-routes, and endpoint failures are returned as ErrorOut values:
+against return annotations. Invalid request data raises a structured
+MCAError with status 422. Unknown operations and routes raise errors with
+status 404, while endpoint failures use status 500 unless the endpoint raises
+an explicit status:
 
 ~~~python
-result = router.dispatch("/items/not-an-integer", method="GET")
-print(result.model_dump())
-# {
-#     "code": "invalid_request",
-#     "detail": "...",
-#     "field": "item_id",
-# }
+try:
+    router.dispatch("/items/not-an-integer", method="GET")
+except MCAError as exc:
+    print(exc.code, exc.status, exc.field)
+    # invalid_request 422 item_id
 ~~~
 
 Register several methods when one implementation has the same input and output
@@ -418,6 +424,105 @@ def item(params: ItemParams) -> ItemOut | None:
 
 This creates get_item and remove_item. Separate register decorators are clearer
 when methods have different request or response models.
+
+### Composing private MCA services
+
+The same explicit composition pattern applies to both adapters. A public
+router can mount private MCA services through a small client adapter. The
+client can use JSON-RPC, HTTP, or another transport; it only needs to provide
+`discover()` and `call()` methods.
+
+When discovery needs schemas for multiple delegated operations, the public
+router batches the missing operation names into one `get_mca` request per
+mounted service and caches each returned schema. Guide content is requested
+separately only when that guide is explicitly requested.
+
+#### PydanticMCARouter
+
+~~~python
+from mca.pydantic import PydanticMCARouter
+
+
+class JsonRpcMCAClient:
+    def __init__(self, rpc):
+        self.rpc = rpc
+
+    def discover(self, *, guide=None, operation=None):
+        return self.call(
+            "get_mca",
+            params={"guide": guide, "operation": operation},
+        )
+
+    def call(self, operation, *, params=None, data=None):
+        return self.rpc.call(
+            "mca.dispatch",
+            {"operation": operation, "params": params, "data": data},
+        )
+
+
+public_router = PydanticMCARouter(title="Public API")
+billing = JsonRpcMCAClient(billing_rpc)
+public_router.mount("billing", billing)
+~~~
+
+Mounting is only composition setup; it does not publish or dispatch private
+operations automatically. Each capability that should be public gets its own
+public operation and explicitly identifies the private operation it may call:
+
+~~~python
+@public_router.register(
+    "/invoices/{invoice_id}",
+    delegate_to="billing.get_invoice",
+)
+def get_public_invoice(params: InvoiceParams) -> InvoiceOut:
+    result = billing.call(
+        "get_invoice",
+        params={"invoice_id": params.invoice_id},
+    )
+    return InvoiceOut(**result)
+~~~
+
+Discovery publishes `get_public_invoice` and its public schema. The private
+operation remains unavailable as `billing.get_invoice` through the public
+router. Guides attached to the delegated private operation are available under
+names such as `billing/invoices.md`; unassociated private operations and
+guides remain undiscoverable.
+
+#### NinjaMCARouter
+
+Ninja composition is explicit. Mounting a private client does not register
+any of its routes on the public API. Each public operation gets its own route,
+authorization, and handler; the handler can perform authentication, ACL,
+tracking, or input transformation before calling the private operation:
+
+~~~python
+from ninja import NinjaAPI
+from mca.ninja import NinjaMCARouter
+
+api = NinjaAPI()
+public_router = NinjaMCARouter(api, title="Public API")
+billing = JsonRpcMCAClient(billing_rpc)
+public_router.mount("billing", billing)
+
+
+@public_router.register(
+    "/invoices/{invoice_id}",
+    operation_id="get_invoice",
+    response=InvoiceOut,
+    auth=public_auth,
+    delegate_to="billing.get_invoice",
+)
+def get_invoice(request, invoice_id: int):
+    audit.log(request.auth, "get_invoice", invoice_id)
+    return billing.call("get_invoice", params={"invoice_id": invoice_id})
+~~~
+
+`delegate_to` is discovery metadata and is not passed to Django Ninja. The
+public operation name and route remain authoritative, so discovery publishes
+`get_invoice` and its public request/response schema—not the private route.
+Guides attached to the private operation are available under names such as
+`billing/invoices.md`. Private operations and unassociated private guides are
+not published unless another public route explicitly delegates to them.
 
 ## Django Ninja APIs
 
@@ -707,10 +812,11 @@ raise MCAError(
 ~~~
 
 The error has code, detail, an optional field, and an HTTP status. The Pydantic
-adapter converts MCA errors and validation failures into ErrorOut values. The
-Django Ninja adapter raises the error through the normal request path, so
-register an application exception handler when the API needs a consistent JSON
-shape. MCP converts the resulting HTTP error into an MCP tool error.
+adapter raises MCAError so an RPC client can preserve the error across a
+service boundary. The Django Ninja adapter catches MCAError raised by a
+registered operation and returns the structured ErrorOut payload with the
+matching HTTP status. MCP converts the resulting HTTP error into an MCP tool
+error.
 
 MCA does not impose an authentication policy. Normal Ninja requests use the
 authentication configured on the NinjaAPI or route. Internal execution and MCP

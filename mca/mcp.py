@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-import json
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -14,12 +14,13 @@ from mcp.server.mcpserver.exceptions import ToolError
 from .base import MCAError
 from .ninja import NinjaMCARouter
 
-
 BODY_METHODS = {"POST", "PUT", "PATCH"}
 
 
 @dataclass(frozen=True)
 class MCPRoute:
+    """Mounted MCP application and its public Django URL."""
+
     app_label: str
     path: str
     server: MCPServer
@@ -27,18 +28,28 @@ class MCPRoute:
 
 
 class MCPHost:
+    """ASGI host that exposes each Django app's Ninja MCA as an MCP tool.
+
+    The host discovers application registries lazily after Django initializes,
+    then forwards MCA-relative tool routes to the corresponding Streamable HTTP
+    MCP application and all other traffic to Django.
+    """
+
     def __init__(self):
+        """Create an uninitialized host; Django and app routes load on first use."""
         self._django_application: Any | None = None
         self._routes: tuple[MCPRoute, ...] = ()
 
     @staticmethod
     def _json_response(response: Any) -> Any:
+        """Decode a successful Django response, treating empty/204 as ``None``."""
         if response.status_code == 204 or not response.content:
             return None
         return json.loads(response.content)
 
     @staticmethod
     def _tool_error(response: Any) -> ToolError:
+        """Convert an HTTP error response into an MCP ``ToolError`` payload."""
         try:
             payload = json.loads(response.content)
         except (TypeError, ValueError, UnicodeDecodeError):
@@ -52,6 +63,7 @@ class MCPHost:
 
     @staticmethod
     def _parse_route(route: str) -> tuple[str, str, dict[str, Any]]:
+        """Parse an MCP route argument into method, path, and query values."""
         if not isinstance(route, str) or not route.strip():
             raise MCAError("invalid_route", "Route must be a non-empty HTTP method and path.", "route")
 
@@ -91,6 +103,7 @@ class MCPHost:
         query_params: dict[str, Any],
         body: Any,
     ) -> str:
+        """Invoke a resolved Ninja operation and serialize its JSON response."""
         response = registry.execute_http_request(
             operation,
             path_params=path_params,
@@ -109,6 +122,7 @@ class MCPHost:
         body: Any,
         api_base_path: str,
     ) -> str:
+        """Validate and resolve an HTTP-style MCP route before execution."""
         method, path, query_params = self._parse_route(route)
         if path == api_base_path or path.startswith(f"{api_base_path}/"):
             raise MCAError(
@@ -136,6 +150,11 @@ class MCPHost:
         return self._call_operation(registry, operation, path_params, query_params, body)
 
     def build_server(self, registry: NinjaMCARouter, app_label: str) -> MCPServer:
+        """Build the MCP server and tool for one Django app's MCA registry.
+
+        The resulting tool accepts an HTTP-style route relative to
+        ``/api/{app_label}``; ``GET /`` is the discovery entry point.
+        """
         server = MCPServer(f"{app_label} API")
         tool_name = f"{app_label}_api"
         rest_base_path = f"/api/{app_label}"
@@ -155,17 +174,34 @@ class MCPHost:
             route: str,
             body: Any = None,
         ) -> str:
+            """Handle one MCP tool call using an MCA-relative HTTP route."""
             try:
                 return self._call_route(registry, route, body, rest_base_path)
             except MCAError as exc:
-                raise ToolError(json.dumps({"code": exc.code, "detail": exc.detail, "field": exc.field, "status": exc.status}, ensure_ascii=False)) from exc
+                raise ToolError(
+                    json.dumps(
+                        {
+                            "code": exc.code,
+                            "detail": exc.detail,
+                            "field": exc.field,
+                            "status": exc.status,
+                        },
+                        ensure_ascii=False,
+                    )
+                ) from exc
 
         call_api.__name__ = tool_name
         return server
 
     def discover_routes(self) -> tuple[MCPRoute, ...]:
-        from django.apps import apps
+        """Discover Django apps that export a ``mca_registry`` Ninja router.
+
+        Each discovered app receives a unique ``/api/{label}/mcp`` path and
+        ``{label}_api`` tool name. Duplicate paths or names are rejected.
+        """
         from importlib import import_module
+
+        from django.apps import apps
 
         routes: list[MCPRoute] = []
         paths: set[str] = set()
@@ -208,6 +244,7 @@ class MCPHost:
         return tuple(routes)
 
     async def _dispatch(self, scope: dict[str, Any], receive: Any, send: Any):
+        """Route MCP paths to MCP applications and delegate everything else to Django."""
         self._initialize()
         if scope.get("type") == "http":
             path = scope.get("path", "")
@@ -225,6 +262,7 @@ class MCPHost:
         return await self._django_application(scope, receive, send)
 
     def _initialize(self) -> None:
+        """Initialize Django and discover MCP routes exactly once."""
         if self._django_application is not None:
             return
 
@@ -235,6 +273,7 @@ class MCPHost:
 
     @asynccontextmanager
     async def _mcp_lifespan(self):
+        """Run every discovered MCP session manager during ASGI lifespan."""
         self._initialize()
         async with AsyncExitStack() as stack:
             for route in self._routes:
@@ -242,6 +281,7 @@ class MCPHost:
             yield
 
     async def _handle_lifespan(self, receive: Any, send: Any):
+        """Translate ASGI lifespan messages into startup/shutdown completion events."""
         startup_complete = False
         try:
             message = await receive()
@@ -265,6 +305,7 @@ class MCPHost:
             await send({"type": event_type, "message": str(exc)})
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any):
+        """Serve HTTP and lifespan ASGI scopes through the composed host."""
         if scope.get("type") == "lifespan":
             return await self._handle_lifespan(receive, send)
         return await self._dispatch(scope, receive, send)
