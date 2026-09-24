@@ -165,36 +165,89 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertEqual(result.code, "invalid_request")
         self.assertEqual(result.field, "item_id")
 
-    def test_mount_merges_namespaced_discovery_and_delegates_operations(self):
+    def test_mount_requires_explicit_public_routes(self):
         client = FakeMCAClient()
         self.router.mount("billing", client)
 
         discovery = self.router.dispatch("get_mca")
+        self.assertNotIn("billing.get_invoice", discovery.available_operations)
+        self.assertNotIn("billing/index.md", discovery.available_guides)
+
+        @self.router.register(
+            "/invoices/{item_id}",
+            delegate_to="billing.get_invoice",
+        )
+        def get_public_invoice(params: ItemParams) -> ItemOut:
+            result = client.call(
+                "get_invoice",
+                params={"invoice_id": params.item_id},
+            )
+            return ItemOut(item_id=result["invoice_id"])
+
+        discovery = self.router.dispatch("get_mca")
+        details = self.router.dispatch(
+            "get_mca",
+            params={"operation": "get_public_invoice"},
+        )
         result = self.router.dispatch(
+            "get_public_invoice",
+            params={"item_id": 7},
+        )
+        mounted_result = self.router.dispatch(
             "billing.get_invoice",
             params={"invoice_id": 7},
         )
 
         self.assertEqual(discovery.title, "Model Context API")
         self.assertEqual(discovery.index, "# MCA")
-        self.assertIn("billing/index.md", discovery.available_guides)
         self.assertIn("billing/invoices.md", discovery.available_guides)
         self.assertEqual(
-            discovery.available_operations["billing.get_invoice"],
-            "billing.get_invoice - Read an invoice.",
+            discovery.available_operations["get_public_invoice"],
+            "GET invoices/{item_id} - Get public invoice",
         )
-        self.assertEqual(result, {"invoice_id": 7})
+        self.assertEqual(details.operations["get_public_invoice"].route, "GET invoices/{item_id}")
+        self.assertEqual(
+            details.operations["get_public_invoice"].guides,
+            ["billing/invoices.md"],
+        )
+        self.assertEqual(result, ItemOut(item_id=7))
+        self.assertIsInstance(mounted_result, ErrorOut)
+        self.assertEqual(mounted_result.code, "unknown_operation")
         self.assertEqual(client.calls, [("get_invoice", {"invoice_id": 7}, None)])
 
-    def test_mount_merges_mixed_guides_and_operation_schemas(self):
+        operation_result = self.router.dispatch(
+            "get_mca",
+            params={"operation": "billing.get_invoice"},
+        )
+        self.assertIsInstance(operation_result, ErrorOut)
+        self.assertEqual(operation_result.code, "unknown_operation")
+
+        guide_result = self.router.dispatch(
+            "get_mca",
+            params={"guide": "billing/index.md"},
+        )
+        self.assertIsInstance(guide_result, ErrorOut)
+        self.assertEqual(guide_result.code, "unknown_guides")
+
+    def test_explicit_composition_merges_mixed_guides_and_public_operation_schemas(self):
         client = FakeMCAClient()
         self.router.mount("billing", client)
+
+        @self.router.register(
+            "/invoices/{item_id}",
+            delegate_to="billing.get_invoice",
+        )
+        def get_public_invoice(params: ItemParams) -> ItemOut:
+            return ItemOut(**client.call(
+                "get_invoice",
+                params=params.model_dump(),
+            ))
 
         details = self.router.dispatch(
             "get_mca",
             params={
                 "guide": "workflow.md,billing/invoices.md",
-                "operation": "get_item,billing.get_invoice",
+                "operation": "get_item,get_public_invoice",
             },
         )
 
@@ -203,12 +256,13 @@ class PydanticMCARouterPackageTests(TestCase):
             {"workflow.md", "billing/invoices.md"},
         )
         self.assertIn("get_item", details.operations)
+        self.assertIn("get_public_invoice", details.operations)
         self.assertEqual(
-            details.operations["billing.get_invoice"].route,
-            "billing.get_invoice",
+            details.operations["get_public_invoice"].route,
+            "GET invoices/{item_id}",
         )
         self.assertEqual(
-            details.operations["billing.get_invoice"].guides,
+            details.operations["get_public_invoice"].guides,
             ["billing/invoices.md"],
         )
 
@@ -228,6 +282,22 @@ class PydanticMCARouterPackageTests(TestCase):
             def get_conflicting_operation():
                 return None
 
+        with self.assertRaises(ValueError):
+            @self.router.register(
+                "/bad",
+                delegate_to="billing",
+            )
+            def get_bad_target():
+                return None
+
+        with self.assertRaises(ValueError):
+            @self.router.register(
+                "/unmounted",
+                delegate_to="private.get_status",
+            )
+            def get_unmounted_target():
+                return None
+
         failing_router = PydanticMCARouter()
 
         class FailingClient(FakeMCAClient):
@@ -235,6 +305,10 @@ class PydanticMCARouterPackageTests(TestCase):
                 raise RuntimeError("connection refused")
 
         failing_router.mount("private", FailingClient())
+        @failing_router.register(delegate_to="private.get_status")
+        def get_status() -> ItemOut:
+            return ItemOut(item_id=1)
+
         result = failing_router.dispatch("get_mca")
 
         self.assertIsInstance(result, ErrorOut)

@@ -11,7 +11,7 @@ from typing import Any, Callable, TypeVar, get_type_hints
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from .base import BaseMCARouter, MCAError, RegisteredRoute
-from .composition import MCAClient
+from .composition import MCACompositionMixin
 from .models import (APIRouteSchemaOut, DiscoveryParams, ErrorOut,
                      MCADiscoveryOut, MCAResponseOut)
 
@@ -48,40 +48,7 @@ def _validation_error_response(exc: DispatchValidationError) -> ErrorOut:
     )
 
 
-class PydanticMCARouter(BaseMCARouter):
-    _namespace_pattern = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
-
-    def __init__(self, *args: Any, **kwargs: Any):
-        self._mounted_mcas: dict[str, MCAClient] = {}
-        super().__init__(*args, **kwargs)
-
-    def mount(self, namespace: str, client: MCAClient) -> None:
-        """Mount a remote MCA under a stable public namespace."""
-        if not isinstance(namespace, str) or self._namespace_pattern.fullmatch(namespace) is None:
-            raise ValueError(
-                "MCA mount namespace must start with a letter and contain only letters, numbers, '-' or '_'."
-            )
-        if namespace in self._mounted_mcas:
-            raise ValueError(f"MCA namespace {namespace!r} is already mounted.")
-        if any(
-            route.operation == namespace or route.operation.startswith(f"{namespace}.")
-            for route in self._routes.values()
-        ):
-            raise ValueError(f"MCA namespace {namespace!r} conflicts with a local operation.")
-        if not callable(getattr(client, "discover", None)) or not callable(getattr(client, "call", None)):
-            raise TypeError("MCA client must provide discover() and call() methods.")
-        self._mounted_mcas[namespace] = client
-
-    def _validate_route_registration(
-        self,
-        path: str | None,
-        method: str,
-        operation: str,
-    ) -> None:
-        super()._validate_route_registration(path, method, operation)
-        if any(operation == namespace or operation.startswith(f"{namespace}.") for namespace in self._mounted_mcas):
-            raise ValueError(f"MCA operation {operation!r} conflicts with a mounted namespace.")
-
+class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
     @staticmethod
     def _validate_route_path(path: str | None) -> None:
         """Pydantic operations may be registered without an HTTP route."""
@@ -127,11 +94,12 @@ class PydanticMCARouter(BaseMCARouter):
         return endpoint
 
     def _route_metadata(self, endpoint: F, options: Mapping[str, Any]) -> Mapping[str, Any]:
+        metadata = dict(super()._route_metadata(endpoint, options))
         parameters = inspect.signature(endpoint).parameters
         type_hints = get_type_hints(endpoint)
         params_parameter = parameters.get("params")
         body_parameter = parameters.get("data")
-        return {
+        metadata.update({
             "params_type": type_hints.get("params") if "params" in parameters else None,
             "body_type": type_hints.get("data") if "data" in parameters else None,
             "response_type": type_hints.get("return"),
@@ -143,7 +111,8 @@ class PydanticMCARouter(BaseMCARouter):
                 body_parameter is not None
                 and body_parameter.default is inspect.Parameter.empty
             ),
-        }
+        })
+        return metadata
 
     @staticmethod
     def _schema_parts(annotation: Any) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -257,114 +226,33 @@ class PydanticMCARouter(BaseMCARouter):
         return APIRouteSchemaOut(
             route=route.discovery_route,
             description=route.description,
-            guides=route.meta("guides"),
+            guides=self._route_guides(route),
             request_schema=request_schema,
             response_schema=response_schema,
         )
 
-    @staticmethod
-    def _query_names(value: str | None) -> list[str]:
-        return [] if value is None else [item.strip() for item in value.split(",")]
+    def _get_mca(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
+        if params.guide is None and params.operation_name is None:
+            result = self.discovery(None, None, self._route_schema)
+            remote_guides = self._exposed_remote_guides()
+            if remote_guides:
+                result["available_guides"] = sorted(
+                    set(result.get("available_guides") or []) | remote_guides
+                )
+            return MCAResponseOut(**result)
 
-    def _split_query_names(
-        self,
-        value: str | None,
-        separator: str,
-    ) -> tuple[list[str], dict[str, list[str]]]:
-        local_names: list[str] = []
-        mounted_names: dict[str, list[str]] = {}
-        for name in self._query_names(value):
-            namespace, delimiter, remote_name = name.partition(separator)
-            if delimiter and namespace in self._mounted_mcas:
-                mounted_names.setdefault(namespace, []).append(remote_name)
-            else:
-                local_names.append(name)
-        return local_names, mounted_names
-
-    @staticmethod
-    def _remote_error(namespace: str, action: str, exc: Exception) -> MCAError:
-        return MCAError(
-            "upstream_unavailable",
-            f"Mounted MCA service '{namespace}' could not {action}.",
-            "service",
-            502,
-        )
-
-    def _remote_discovery(
-        self,
-        namespace: str,
-        *,
-        guide: str | None = None,
-        operation: str | None = None,
-    ) -> dict[str, Any]:
-        client = self._mounted_mcas[namespace]
-        try:
-            value = client.discover(guide=guide, operation=operation)
-            model = MCAResponseOut if guide is None and operation is None else MCADiscoveryOut
-            return model.model_validate(value).model_dump()
-        except MCAError:
-            raise
-        except ValidationError as exc:
-            raise MCAError(
-                "invalid_upstream_response",
-                f"Mounted MCA service '{namespace}' returned an invalid discovery response.",
-                "service",
-                502,
-            ) from exc
-        except Exception as exc:
-            raise self._remote_error(namespace, "return discovery data", exc) from exc
-
-    @staticmethod
-    def _namespaced_operation_description(name: str, description: Any) -> str:
-        text = str(description)
-        _, separator, detail = text.partition(" - ")
-        return f"{name} - {detail if separator else text}"
-
-    @staticmethod
-    def _namespaced_operation_schema(
-        namespace: str,
-        name: str,
-        value: Any,
-    ) -> dict[str, Any]:
-        schema = APIRouteSchemaOut.model_validate(value).model_dump()
-        schema["route"] = f"{namespace}.{name}"
-        if schema.get("guides") is not None:
-            schema["guides"] = [f"{namespace}/{guide}" for guide in schema["guides"]]
-        return schema
-
-    def _merge_mounted_root(self, result: dict[str, Any]) -> dict[str, Any]:
-        operations = dict(result.get("available_operations", {}))
-        guides = list(result.get("available_guides") or [])
-        for namespace in self._mounted_mcas:
-            remote = self._remote_discovery(namespace)
-            for name, description in remote.get("available_operations", {}).items():
-                public_name = f"{namespace}.{name}"
-                operations[public_name] = self._namespaced_operation_description(public_name, description)
-            guides.extend(
-                f"{namespace}/{name}"
-                for name in remote.get("available_guides", []) or []
+        local_guides, mounted_guides = self._split_remote_guides(params.guide)
+        result: dict[str, Any] = {}
+        if local_guides or params.operation_name is not None:
+            result.update(
+                self.discovery(
+                    ",".join(local_guides) if local_guides else None,
+                    params.operation_name,
+                    self._route_schema,
+                )
             )
-        result["available_operations"] = dict(sorted(operations.items()))
-        if guides:
-            result["available_guides"] = sorted(set(guides))
-        return result
-
-    def _merge_mounted_details(
-        self,
-        result: dict[str, Any],
-        mounted_guides: Mapping[str, list[str]],
-        mounted_operations: Mapping[str, list[str]],
-    ) -> dict[str, Any]:
-        for namespace in self._mounted_mcas:
-            guides = mounted_guides.get(namespace, [])
-            operations = mounted_operations.get(namespace, [])
-            if not guides and not operations:
-                continue
-            remote = self._remote_discovery(
-                namespace,
-                guide=",".join(guides) if guides else None,
-                operation=",".join(operations) if operations else None,
-            )
+        for namespace, guides in mounted_guides.items():
+            remote = self._remote_discovery(namespace, guide=",".join(guides))
             if remote.get("guides") is not None:
                 result.setdefault("guides", {}).update(
                     {
@@ -372,69 +260,7 @@ class PydanticMCARouter(BaseMCARouter):
                         for name, content in remote["guides"].items()
                     }
                 )
-            if remote.get("operations") is not None:
-                result.setdefault("operations", {}).update(
-                    {
-                        f"{namespace}.{name}": self._namespaced_operation_schema(
-                            namespace,
-                            name,
-                            schema,
-                        )
-                        for name, schema in remote["operations"].items()
-                    }
-                )
-        return result
-
-    def _get_mca(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
-        if params.guide is None and params.operation_name is None:
-            return MCAResponseOut(**self._merge_mounted_root(
-                self.discovery(None, None, self._route_schema)
-            ))
-
-        local_guides, mounted_guides = self._split_query_names(params.guide, "/")
-        local_operations, mounted_operations = self._split_query_names(params.operation_name, ".")
-        result: dict[str, Any] = {}
-        if local_guides or local_operations:
-            result.update(
-                self.discovery(
-                    ",".join(local_guides) if local_guides else None,
-                    ",".join(local_operations) if local_operations else None,
-                    self._route_schema,
-                )
-            )
-        result = self._merge_mounted_details(result, mounted_guides, mounted_operations)
         return MCADiscoveryOut(**result)
-
-    def _mounted_operation(self, operation: str) -> tuple[str, str] | None:
-        namespace, separator, remote_operation = operation.partition(".")
-        if separator and namespace in self._mounted_mcas:
-            return namespace, remote_operation
-        return None
-
-    def _dispatch_mounted(
-        self,
-        namespace: str,
-        operation: str,
-        params: dict[str, Any] | None,
-        data: Any,
-    ) -> Any:
-        if not operation:
-            raise MCAError(
-                "unknown_operation",
-                "A mounted operation name is required.",
-                "operation",
-                404,
-            )
-        try:
-            return self._mounted_mcas[namespace].call(
-                operation,
-                params=params,
-                data=data,
-            )
-        except MCAError:
-            raise
-        except Exception as exc:
-            raise self._remote_error(namespace, "complete the operation", exc) from exc
 
     def _dispatch_registered(
         self,
@@ -470,11 +296,6 @@ class PydanticMCARouter(BaseMCARouter):
         method: str = "GET",
     ) -> Any:
         try:
-            if operation is not None and not operation.startswith("/"):
-                mounted_operation = self._mounted_operation(operation)
-                if mounted_operation is not None:
-                    namespace, remote_operation = mounted_operation
-                    return self._dispatch_mounted(namespace, remote_operation, params, data)
             return super().dispatch(
                 operation,
                 params,

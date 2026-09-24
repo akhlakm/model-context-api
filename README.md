@@ -419,11 +419,14 @@ def item(params: ItemParams) -> ItemOut | None:
 This creates get_item and remove_item. Separate register decorators are clearer
 when methods have different request or response models.
 
-### Composing private Pydantic services
+### Composing private MCA services
 
-A public Pydantic router can mount private MCA services through a small client
-adapter. The client can use JSON-RPC, HTTP, or another transport; it only needs
-to provide `discover()` and `call()` methods:
+The same explicit composition pattern applies to both adapters. A public
+router can mount private MCA services through a small client adapter. The
+client can use JSON-RPC, HTTP, or another transport; it only needs to provide
+`discover()` and `call()` methods.
+
+#### PydanticMCARouter
 
 ~~~python
 from mca.pydantic import PydanticMCARouter
@@ -447,32 +450,34 @@ class JsonRpcMCAClient:
 
 
 public_router = PydanticMCARouter(title="Public API")
-public_router.mount("billing", JsonRpcMCAClient(billing_rpc))
+billing = JsonRpcMCAClient(billing_rpc)
+public_router.mount("billing", billing)
 ~~~
 
-Mounted operations are namespaced to keep the public catalog unambiguous. A
-private `get_invoice` operation is discovered and called as
-`billing.get_invoice`; a private `invoices.md` guide is requested as
-`billing/invoices.md`. The public router owns its title, help text, and root
-index while merging mounted operations and guides into discovery:
+Mounting is only composition setup; it does not publish or dispatch private
+operations automatically. Each capability that should be public gets its own
+public operation and explicitly identifies the private operation it may call:
 
 ~~~python
-discovery = public_router.dispatch("get_mca")
-schema = public_router.dispatch(
-    "get_mca",
-    params={"operation": "billing.get_invoice"},
+@public_router.register(
+    "/invoices/{invoice_id}",
+    delegate_to="billing.get_invoice",
 )
-result = public_router.dispatch(
-    "billing.get_invoice",
-    params={"invoice_id": 42},
-)
+def get_public_invoice(params: InvoiceParams) -> InvoiceOut:
+    result = billing.call(
+        "get_invoice",
+        params={"invoice_id": params.invoice_id},
+    )
+    return InvoiceOut(**result)
 ~~~
 
-The private service remains unreachable directly by public clients. Its own
-router continues to validate its inputs and outputs; the public router only
-forwards the operation name, parameters, and body.
+Discovery publishes `get_public_invoice` and its public schema. The private
+operation remains unavailable as `billing.get_invoice` through the public
+router. Guides attached to the delegated private operation are available under
+names such as `billing/invoices.md`; unassociated private operations and
+guides remain undiscoverable.
 
-### Composing a private service from Django Ninja
+#### NinjaMCARouter
 
 Ninja composition is explicit. Mounting a private client does not register
 any of its routes on the public API. Each public operation gets its own route,
