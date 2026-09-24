@@ -88,12 +88,13 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         response = {
             400: ErrorOut,
             404: ErrorOut,
+            500: ErrorOut,
             502: ErrorOut,
             **self.error_responses,
             200: MCAResponseOut | MCADiscoveryOut,
         }
 
-        def get_mca(
+        async def get_mca(
             request: HttpRequest,
             guide: str | None = Query(None, description="Comma-separated names of Markdown guides to read."),
             operation_name: str | None = Query(
@@ -104,7 +105,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         ):
             """Return discovery data or a Ninja-formatted MCA error response."""
             try:
-                return self._get_mca(guide, operation_name)
+                return await self._aget_mca(guide, operation_name)
             except MCAError as exc:
                 return Status(
                     exc.status,
@@ -154,6 +155,19 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
     def _http_endpoint(endpoint: F) -> F:
         """Convert raised MCA errors into structured Ninja HTTP responses."""
 
+        if inspect.iscoroutinefunction(endpoint):
+            @wraps(endpoint)
+            async def async_wrapped(*args: Any, **kwargs: Any) -> Any:
+                try:
+                    return await endpoint(*args, **kwargs)
+                except MCAError as exc:
+                    return Status(
+                        exc.status,
+                        ErrorOut(code=exc.code, detail=exc.detail, field=exc.field),
+                    )
+
+            return async_wrapped  # type: ignore[return-value]
+
         @wraps(endpoint)
         def wrapped(*args: Any, **kwargs: Any) -> Any:
             try:
@@ -197,6 +211,30 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             request._dont_enforce_csrf_checks = True
 
         return ninja_operation.run(request, **dict(path_params or {}))
+
+    async def execute_http_async(
+        self,
+        operation: str,
+        request: HttpRequest,
+        path_params: Mapping[str, Any] | None = None,
+        *,
+        allow_anonymous: bool = False,
+    ) -> HttpResponseBase:
+        """Asynchronously execute a Ninja operation against an existing request.
+
+        Synchronous operations are also supported; asynchronous operations are
+        awaited natively. Use this method for async discovery and handlers.
+        """
+        route = self.route(operation)
+        ninja_operation = self._ninja_operation(route.operation)
+        if allow_anonymous:
+            request._mca_allow_anonymous = True
+            request._dont_enforce_csrf_checks = True
+
+        response = ninja_operation.run(request, **dict(path_params or {}))
+        if inspect.isawaitable(response):
+            return await response
+        return response
 
     def execute_http_request(
         self,
@@ -311,6 +349,14 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
     def _get_mca(self, guide: str | None, operation_name: str | None):
         """Serve composed discovery through the Ninja adapter."""
         return self._composed_discovery(guide, operation_name, self._route_schema)
+
+    async def _aget_mca(self, guide: str | None, operation_name: str | None):
+        """Serve composed discovery asynchronously through the Ninja adapter."""
+        return await self._composed_discovery_async(
+            guide,
+            operation_name,
+            self._aroute_schema,
+        )
 
     def _operation_api(self) -> Any:
         """Return an API object capable of generating OpenAPI for this registry."""
@@ -470,6 +516,30 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         if guides:
             schema["guides"] = guides
         return self._compose_route_schema(route, schema)
+
+    async def _aroute_schema(self, route: RegisteredRoute) -> dict[str, Any]:
+        """Build and asynchronously compose one operation discovery schema."""
+        openapi_schema = self._openapi_schema()
+        operation = self._find_openapi_operation(openapi_schema, route.operation)
+        if operation is None:
+            raise MCAError(
+                "unknown_operation",
+                f"No schema is available for operation '{route.operation}'.",
+                "operation",
+                404,
+            )
+
+        components = openapi_schema.get("components", {}).get("schemas", {})
+        schema: dict[str, Any] = {
+            "route": route.discovery_route,
+            "description": operation.get("description") or operation.get("summary") or route.description,
+            "request_schema": self._openapi_request_schema(operation, route.path, components),
+            "response_schema": self._openapi_response_schema(operation, components),
+        }
+        guides = await self._route_guides_async(route)
+        if guides:
+            schema["guides"] = guides
+        return await self._compose_route_schema_async(route, schema)
 
     @staticmethod
     def _referenced_components(

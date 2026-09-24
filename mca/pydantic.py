@@ -265,6 +265,21 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
             self._compose_route_schema(route, local_schema.model_dump())
         )
 
+    async def _aroute_schema(self, route: RegisteredRoute) -> APIRouteSchemaOut:
+        """Build and asynchronously compose one operation discovery schema."""
+        local_schema = APIRouteSchemaOut(
+            route=route.discovery_route,
+            description=route.description,
+            guides=await self._route_guides_async(route),
+            request_schema=self._request_schema(route),
+            response_schema=self._response_schema(route),
+        )
+        composed = await self._compose_route_schema_async(
+            route,
+            local_schema.model_dump(),
+        )
+        return APIRouteSchemaOut.model_validate(composed)
+
     def _get_mca(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
         """Serve root, guide, or operation discovery through the typed adapter."""
         result = self._composed_discovery(
@@ -279,16 +294,34 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
         )
         return response_model(**result)
 
-    def _dispatch_registered(
+    async def _aget_mca(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
+        """Serve discovery asynchronously, including mounted MCA calls."""
+        result = await self._composed_discovery_async(
+            params.guide,
+            params.operation_name,
+            self._aroute_schema,
+        )
+        response_model = (
+            MCAResponseOut
+            if params.guide is None and params.operation_name is None
+            else MCADiscoveryOut
+        )
+        return response_model(**result)
+
+    def _dispatch_arguments(
         self,
         route: RegisteredRoute,
         params: dict[str, Any] | None,
         data: Any,
-    ) -> Any:
-        """Validate inputs, invoke the callable, and validate its response."""
+    ) -> tuple[dict[str, Any], Any]:
+        """Validate dispatch input and return endpoint keyword arguments."""
         params_type = route.meta("params_type")
         body_type = route.meta("body_type")
-        validated_params = _validate_for_dispatch(params_type, {} if params is None else params, "params")
+        validated_params = _validate_for_dispatch(
+            params_type,
+            {} if params is None else params,
+            "params",
+        )
         validated_body = _validate_for_dispatch(body_type, data, "data")
 
         kwargs: dict[str, Any] = {}
@@ -296,8 +329,40 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
             kwargs["params"] = validated_params
         if body_type is not None:
             kwargs["data"] = validated_body
+        return kwargs, validated_params
 
+    def _dispatch_registered(
+        self,
+        route: RegisteredRoute,
+        params: dict[str, Any] | None,
+        data: Any,
+    ) -> Any:
+        """Validate inputs, invoke the callable, and validate its response."""
+        kwargs, _ = self._dispatch_arguments(route, params, data)
         result = route.endpoint(**kwargs)
+        if inspect.isawaitable(result):
+            raise MCAError(
+                "async_operation",
+                "Use adispatch() for asynchronous operations.",
+                "operation",
+                500,
+            )
+        return _validate_for_dispatch(route.meta("response_type"), result, "response")
+
+    async def _adispatch_registered(
+        self,
+        route: RegisteredRoute,
+        params: dict[str, Any] | None,
+        data: Any,
+    ) -> Any:
+        """Validate, await, and validate one typed async operation."""
+        kwargs, validated_params = self._dispatch_arguments(route, params, data)
+        if route.operation == "get_mca":
+            result = await self._aget_mca(validated_params)
+        else:
+            result = route.endpoint(**kwargs)
+            if inspect.isawaitable(result):
+                result = await result
         return _validate_for_dispatch(route.meta("response_type"), result, "response")
 
     def _dispatch_error(self, error: MCAError) -> NoReturn:
@@ -323,6 +388,34 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
         """
         try:
             return super().dispatch(
+                operation,
+                params,
+                data,
+                method=method,
+            )
+        except DispatchValidationError as exc:
+            raise _validation_error(exc) from exc
+        except MCAError:
+            raise
+        except Exception as exc:
+            raise MCAError(
+                "internal_error",
+                "The endpoint could not complete the operation.",
+                "operation",
+                500,
+            ) from exc
+
+    async def adispatch(
+        self,
+        operation: str | None = None,
+        params: dict[str, Any] | None = None,
+        data: Any = None,
+        *,
+        method: str = "GET",
+    ) -> Any:
+        """Asynchronously dispatch a typed operation or discovery request."""
+        try:
+            return await super().adispatch(
                 operation,
                 params,
                 data,

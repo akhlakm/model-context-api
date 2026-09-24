@@ -1,7 +1,7 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Any
-from unittest import TestCase
+from unittest import IsolatedAsyncioTestCase, TestCase
 
 from pydantic import BaseModel
 
@@ -540,3 +540,94 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertEqual(context.exception.code, "upstream_unavailable")
         self.assertEqual(context.exception.field, "service")
         self.assertEqual(context.exception.status, 502)
+
+
+class AsyncPydanticMCARouterTests(IsolatedAsyncioTestCase):
+    async def test_async_discovery_uses_adiscover_and_composes_schema(self):
+        class AsyncClient:
+            def __init__(self):
+                self.sync_calls = []
+                self.async_calls = []
+
+            def discover(self, **kwargs):
+                self.sync_calls.append(kwargs)
+                raise AssertionError("sync discovery should not be used")
+
+            async def adiscover(self, *, guide=None, operation=None):
+                self.async_calls.append((guide, operation))
+                if guide is not None:
+                    return {
+                        "guides": {
+                            name: f"# {name.removesuffix('.md')}"
+                            for name in guide.split(",")
+                        }
+                    }
+                return {
+                    "operations": {
+                        name: {
+                            "route": f"GET private/{name}",
+                            "description": f"Read {name}.",
+                            "guides": ["invoices.md"],
+                            "request_schema": None,
+                            "response_schema": {
+                                "type": "object",
+                                "properties": {"invoice_id": {"type": "integer"}},
+                            },
+                        }
+                        for name in (operation or "").split(",")
+                    }
+                }
+
+            def call(self, operation, *, params=None, data=None):
+                return {}
+
+            async def acall(self, operation, *, params=None, data=None):
+                return {}
+
+        router = PydanticMCARouter()
+        client = AsyncClient()
+        router.mount("billing", client)
+
+        @router.register(
+            "/invoices/{invoice_id}",
+            delegate_to="billing.get_invoice",
+        )
+        def get_public_invoice() -> dict[str, Any]:
+            return {}
+
+        details = await router.adispatch(
+            "get_mca",
+            params={"operation": "get_public_invoice"},
+        )
+
+        self.assertIn("get_public_invoice", details.operations)
+        self.assertEqual(
+            details.operations["get_public_invoice"].response_schema["type"],
+            "object",
+        )
+        self.assertEqual(client.sync_calls, [])
+        self.assertEqual(client.async_calls, [(None, "get_invoice")])
+
+        guide_details = await router.adispatch(
+            "get_mca",
+            params={"guide": "billing/invoices.md"},
+        )
+        self.assertEqual(
+            guide_details.guides,
+            {"billing/invoices.md": "# invoices"},
+        )
+        self.assertEqual(
+            client.async_calls,
+            [(None, "get_invoice"), ("invoices.md", None)],
+        )
+
+    async def test_async_dispatch_awaits_registered_endpoint(self):
+        router = PydanticMCARouter()
+
+        @router.register()
+        async def get_async_item() -> ItemOut:
+            return ItemOut(item_id=7)
+
+        result = await router.adispatch("get_async_item")
+
+        self.assertEqual(result.item_id, 7)

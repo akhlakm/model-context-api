@@ -35,7 +35,13 @@ class MockJsonRpcClient:
         operation: str | None = None,
     ) -> Any:
         """Asynchronously discover the private router through mock RPC."""
-        return self._discover(guide=guide, operation=operation)
+        self.calls.append({"method": "get_mca", "guide": guide, "operation": operation})
+        return _json_value(
+            await self.router.adispatch(
+                "get_mca",
+                params={"guide": guide, "operation": operation},
+            )
+        )
 
     def _discover(
         self,

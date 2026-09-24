@@ -16,7 +16,7 @@ import django
 
 django.setup()
 
-from unittest import TestCase
+from unittest import IsolatedAsyncioTestCase, TestCase
 
 from ninja import NinjaAPI, Router
 
@@ -462,14 +462,9 @@ class NinjaMCARouterPackageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content), {"invoice_id": 7})
-        discovery_response = registry.execute_http(
-            "get_mca",
-            RequestFactory().get("/"),
-        )
-
-        self.assertEqual(discovery_response.status_code, 200)
-        self.assertIn("get_invoice", json.loads(discovery_response.content)["available_operations"])
-        self.assertEqual(events, ["auth", ("handler", "principal"), "auth"])
+        discovery = registry._get_mca(None, None)
+        self.assertIn("get_invoice", discovery["available_operations"])
+        self.assertEqual(events, ["auth", ("handler", "principal")])
         self.assertEqual(client.calls, [("get_invoice", {"invoice_id": 7}, None)])
 
     def test_endpoint_mca_errors_become_structured_http_responses(self):
@@ -552,3 +547,87 @@ class NinjaMCARouterPackageTests(TestCase):
             router._get_mca(None, None)
         self.assertEqual(context.exception.code, "upstream_unavailable")
         self.assertEqual(context.exception.status, 502)
+
+
+class AsyncNinjaMCARouterTests(IsolatedAsyncioTestCase):
+    async def test_async_discovery_awaits_mounted_client(self):
+        class AsyncClient:
+            def __init__(self):
+                self.sync_calls = []
+                self.async_calls = []
+
+            def discover(self, **kwargs):
+                self.sync_calls.append(kwargs)
+                raise AssertionError("sync discovery should not be used")
+
+            async def adiscover(self, *, guide=None, operation=None):
+                self.async_calls.append((guide, operation))
+                return {
+                    "operations": {
+                        name: {
+                            "route": f"GET private/{name}",
+                            "description": f"Read {name}.",
+                            "guides": ["invoices.md"],
+                            "request_schema": None,
+                            "response_schema": {"type": "object"},
+                        }
+                        for name in (operation or "").split(",")
+                    }
+                }
+
+            def call(self, operation, *, params=None, data=None):
+                return {}
+
+            async def acall(self, operation, *, params=None, data=None):
+                return {}
+
+        api = Router()
+        registry = NinjaMCARouter(api)
+        client = AsyncClient()
+        registry.mount("billing", client)
+
+        @registry.register(
+            "/invoices/{invoice_id}",
+            response=dict,
+            delegate_to="billing.get_invoice",
+        )
+        def get_invoice(request, invoice_id: int):
+            return {"invoice_id": invoice_id}
+
+        response = await registry.execute_http_async(
+            "get_mca",
+            RequestFactory().get("/"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("get_invoice", json.loads(response.content)["available_operations"])
+        self.assertEqual(client.sync_calls, [])
+        self.assertEqual(client.async_calls, [(None, "get_invoice")])
+
+    async def test_async_discovery_requires_async_mounted_client(self):
+        registry = NinjaMCARouter(Router())
+        client = FakeMCAClient()
+        registry.mount("billing", client)
+
+        @registry.register(
+            "/invoices/{invoice_id}",
+            response=dict,
+            delegate_to="billing.get_invoice",
+        )
+        def get_invoice(request, invoice_id: int):
+            return {"invoice_id": invoice_id}
+
+        response = await registry.execute_http_async(
+            "get_mca",
+            RequestFactory().get("/"),
+        )
+
+        self.assertEqual(response.status_code, 500)
+        self.assertEqual(
+            json.loads(response.content),
+            {
+                "code": "async_client_required",
+                "detail": "Mounted MCA service 'billing' does not provide adiscover().",
+                "field": "service",
+            },
+        )

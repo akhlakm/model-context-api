@@ -438,7 +438,9 @@ also provide `adiscover()` and `acall()` as explicit async counterparts.
 When discovery needs schemas for multiple delegated operations, the public
 router batches the missing operation names into one `get_mca` request per
 mounted service and caches each returned schema. Guide content is requested
-separately only when that guide is explicitly requested.
+separately only when that guide is explicitly requested. Synchronous discovery
+uses `discover()`; async discovery uses `await adiscover()` and requires the
+mounted client to provide that method.
 
 #### PydanticMCARouter
 
@@ -688,6 +690,10 @@ validates it through Django Ninja, and returns a Django HttpResponse. When
 source_request is supplied, the authenticated user, cookies, session, and
 relevant request metadata are copied.
 
+`allow_anonymous=True` marks a generated request as explicitly trusted
+internal traffic. Only use it at a trusted boundary, and never expose it as a
+user-controlled HTTP option.
+
 For an already-created HttpRequest, use execute_http:
 
 ~~~python
@@ -698,10 +704,19 @@ response = mca_registry.execute_http(
 )
 ~~~
 
-Both methods are synchronous and reject asynchronous Ninja endpoints.
-allow_anonymous=True marks a generated request as explicitly trusted internal
-traffic. Only use it at a trusted boundary, and never expose it as a
-user-controlled HTTP option.
+Both synchronous methods reject asynchronous Ninja endpoints. Use
+`execute_http_async()` when invoking async operations or async discovery:
+
+~~~python
+response = await mca_registry.execute_http_async(
+    "get_mca",
+    request,
+)
+~~~
+
+The public Ninja `get_mca` endpoint is async-aware and awaits mounted
+`adiscover()` calls. Existing synchronous operation handlers continue using
+`call()`; async handlers should explicitly await `acall()`.
 
 ## MCP hosting
 

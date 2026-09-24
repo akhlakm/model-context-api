@@ -416,6 +416,41 @@ class BaseMCARouter:
         except MCAError as exc:
             return self._dispatch_error(exc)
 
+    async def adispatch(
+        self,
+        operation: str | None = None,
+        params: dict[str, Any] | None = None,
+        data: Any = None,
+        *,
+        method: str = "GET",
+    ) -> Any:
+        """Asynchronously dispatch an operation or HTTP-style route path.
+
+        This mirrors :meth:`dispatch` while allowing concrete adapters to
+        await asynchronous endpoints and remote composition clients.
+        """
+        if operation is None:
+            return self._error("invalid_request", "An operation or route path is required.", "operation")
+
+        if operation.startswith("/"):
+            route_path = operation
+            resolved = self.resolve(method, route_path)
+            if resolved is None:
+                return self._error(
+                    "unknown_route",
+                    f"No route matches {method.upper()} {route_path}.",
+                    "path",
+                    404,
+                )
+            operation, path_params = resolved
+            params = {**(params or {}), **path_params}
+
+        try:
+            route = self.route(operation)
+            return await self._adispatch_registered(route, params, data)
+        except MCAError as exc:
+            return self._dispatch_error(exc)
+
     def _dispatch_registered(
         self,
         route: RegisteredRoute,
@@ -424,6 +459,18 @@ class BaseMCARouter:
     ) -> Any:
         """Dispatch one resolved route; implemented by concrete adapters."""
         raise NotImplementedError
+
+    async def _adispatch_registered(
+        self,
+        route: RegisteredRoute,
+        params: dict[str, Any] | None,
+        data: Any,
+    ) -> Any:
+        """Dispatch one route asynchronously, awaiting awaitable results."""
+        result = self._dispatch_registered(route, params, data)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     def _dispatch_error(self, error: MCAError) -> Any:
         """Convert or re-raise an MCA error according to the adapter contract."""
@@ -489,6 +536,62 @@ class BaseMCARouter:
                 name: schema_factory(route_map[name])
                 for name in names
             }
+        return result
+
+    async def adiscovery(
+        self,
+        guide: str | None,
+        operation_name: str | None,
+        schema_factory: Callable[[RegisteredRoute], Any],
+    ) -> dict[str, Any]:
+        """Asynchronously return discovery data using an async schema factory.
+
+        The guide and operation semantics match :meth:`discovery`; operation
+        schema factories may return awaitables for composed remote schemas.
+        """
+        if guide is None and operation_name is None:
+            result = {
+                "title": self.title,
+                "version": self.version,
+                "help": self.help if self.help is not None else self._default_help(),
+                "available_operations": dict(
+                    sorted(
+                        (
+                            route.operation,
+                            f"{route.discovery_route} - {route.description}",
+                        )
+                        for route in self._routes.values()
+                        if route.operation != "get_mca"
+                        and route.meta("include_in_discovery", True)
+                    )
+                ),
+            }
+            if self.guide_catalog.enabled:
+                available_guides = self.guide_catalog.available()
+                if "index.md" in available_guides:
+                    result["index"] = self.guide_catalog.read("index.md")["index.md"]
+                result["available_guides"] = available_guides
+            return result
+
+        result: dict[str, Any] = {}
+        if guide is not None:
+            result["guides"] = self.guide_catalog.read(guide)
+        if operation_name is not None:
+            names = [item.strip() for item in operation_name.split(",")]
+            route_map = dict(self._routes)
+            missing = [name for name in names if not name or name not in route_map]
+            if missing:
+                raise MCAError(
+                    "unknown_operation",
+                    f"Unavailable operation(s): {', '.join(missing)}.",
+                    "operation",
+                    404,
+                )
+            operations: dict[str, Any] = {}
+            for name in names:
+                schema = schema_factory(route_map[name])
+                operations[name] = await schema if inspect.isawaitable(schema) else schema
+            result["operations"] = operations
         return result
 
     def _default_help(self) -> str:

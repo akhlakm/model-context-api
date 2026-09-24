@@ -70,7 +70,12 @@ access log entry, and then calls `billing_rpc`. The RPC client invokes the
 private Pydantic router and serializes its response as JSON. The private
 operation names are `get_invoice`, `make_invoice`, `update_invoice`, and
 `remove_invoice`; they are never registered as public HTTP routes. The limited
-demo token authenticates successfully but is denied by the write/delete ACL:
+demo token authenticates successfully but is denied by the write/delete ACL.
+
+The public discovery endpoint uses the async RPC path, so it awaits
+`billing_rpc.adiscover()` before merging private schemas and guides. Async
+application handlers can likewise call `await billing_rpc.acall(...)` for
+private operations.
 
 ```bash
 curl -i -H 'X-Demo-Token: limited-token' \

@@ -204,6 +204,17 @@ class NinjaCompositionExampleTests(TestCase):
         self.assertEqual(response.json()["status"], "open")
         self.assertEqual(billing_rpc.calls[-1]["method"], "get_invoice")
 
+    def test_public_django_discovery_uses_async_private_rpc(self):
+        with override_settings(ROOT_URLCONF="demo.urls"):
+            response = Client().get("/api/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("make_public_invoice", response.json()["available_operations"])
+        self.assertEqual(
+            [call["method"] for call in billing_rpc.calls],
+            ["get_mca"],
+        )
+
     def test_public_write_operations_delegate_with_params_and_body(self):
         with override_settings(ROOT_URLCONF="demo.urls"):
             client = Client()

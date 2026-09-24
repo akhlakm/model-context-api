@@ -216,11 +216,29 @@ class MCACompositionMixin:
         """Fetch and validate one mounted service's discovery response."""
         client = self._mounted_mcas[namespace]
         try:
-            value = client.discover(guide=guide, operation=operation)
-            model = MCAResponseOut if guide is None and operation is None else MCADiscoveryOut
-            return model.model_validate(value).model_dump()
+            return self._validate_remote_discovery(
+                namespace,
+                client.discover(guide=guide, operation=operation),
+                guide=guide,
+                operation=operation,
+            )
         except MCAError:
             raise
+        except Exception as exc:
+            raise self._remote_error(namespace, "return discovery data") from exc
+
+    def _validate_remote_discovery(
+        self,
+        namespace: str,
+        value: Any,
+        *,
+        guide: str | None,
+        operation: str | None,
+    ) -> dict[str, Any]:
+        """Validate and normalize a discovery response from a mounted service."""
+        try:
+            model = MCAResponseOut if guide is None and operation is None else MCADiscoveryOut
+            return model.model_validate(value).model_dump()
         except ValidationError as exc:
             raise MCAError(
                 "invalid_upstream_response",
@@ -228,6 +246,34 @@ class MCACompositionMixin:
                 "service",
                 502,
             ) from exc
+
+    async def _remote_discovery_async(
+        self,
+        namespace: str,
+        *,
+        guide: str | None = None,
+        operation: str | None = None,
+    ) -> dict[str, Any]:
+        """Asynchronously fetch and validate one mounted discovery response."""
+        client = self._mounted_mcas[namespace]
+        discover = getattr(client, "adiscover", None)
+        if not callable(discover):
+            raise MCAError(
+                "async_client_required",
+                f"Mounted MCA service '{namespace}' does not provide adiscover().",
+                "service",
+                500,
+            )
+        try:
+            value = await discover(guide=guide, operation=operation)
+            return self._validate_remote_discovery(
+                namespace,
+                value,
+                guide=guide,
+                operation=operation,
+            )
+        except MCAError:
+            raise
         except Exception as exc:
             raise self._remote_error(namespace, "return discovery data") from exc
 
@@ -284,32 +330,87 @@ class MCACompositionMixin:
                 continue
 
             result = self._remote_discovery(namespace, operation=",".join(missing))
-            remote_operations = result.get("operations")
-            if not isinstance(remote_operations, Mapping):
-                remote_operations = {}
+            self._cache_remote_schemas(namespace, missing, result)
 
-            schemas: dict[tuple[str, str], APIRouteSchemaOut] = {}
-            for operation in missing:
-                if operation not in remote_operations:
-                    raise MCAError(
-                        "unknown_operation",
-                        f"Mounted MCA service '{namespace}' has no operation '{operation}'.",
-                        "operation",
-                        404,
-                    )
-                try:
-                    schemas[(namespace, operation)] = APIRouteSchemaOut.model_validate(
-                        remote_operations[operation]
-                    )
-                except ValidationError as exc:
-                    raise MCAError(
-                        "invalid_upstream_response",
-                        f"Mounted MCA service '{namespace}' returned an invalid operation schema.",
-                        "service",
-                        502,
-                    ) from exc
+    def _cache_remote_schemas(
+        self,
+        namespace: str,
+        operations: list[str],
+        result: Mapping[str, Any],
+    ) -> None:
+        """Validate and cache a batch of operation schemas."""
+        remote_operations = result.get("operations")
+        if not isinstance(remote_operations, Mapping):
+            remote_operations = {}
 
-            self._remote_schema_cache.update(schemas)
+        schemas: dict[tuple[str, str], APIRouteSchemaOut] = {}
+        for operation in operations:
+            if operation not in remote_operations:
+                raise MCAError(
+                    "unknown_operation",
+                    f"Mounted MCA service '{namespace}' has no operation '{operation}'.",
+                    "operation",
+                    404,
+                )
+            try:
+                schemas[(namespace, operation)] = APIRouteSchemaOut.model_validate(
+                    remote_operations[operation]
+                )
+            except ValidationError as exc:
+                raise MCAError(
+                    "invalid_upstream_response",
+                    f"Mounted MCA service '{namespace}' returned an invalid operation schema.",
+                    "service",
+                    502,
+                ) from exc
+
+        self._remote_schema_cache.update(schemas)
+
+    async def _prefetch_remote_schemas_async(
+        self,
+        operations_by_namespace: Mapping[str, set[str]] | None = None,
+    ) -> None:
+        """Asynchronously fetch all missing delegated schemas per service."""
+        grouped = (
+            self._delegated_operations_by_namespace()
+            if operations_by_namespace is None
+            else operations_by_namespace
+        )
+        for namespace in sorted(grouped):
+            missing = sorted(
+                operation
+                for operation in grouped[namespace]
+                if (namespace, operation) not in self._remote_schema_cache
+            )
+            if missing:
+                result = await self._remote_discovery_async(
+                    namespace,
+                    operation=",".join(missing),
+                )
+                self._cache_remote_schemas(namespace, missing, result)
+
+    async def _remote_operation_schema_async(
+        self,
+        namespace: str,
+        operation: str,
+    ) -> APIRouteSchemaOut:
+        """Return one async-fetched cached remote operation schema."""
+        cache_key = (namespace, operation)
+        cached = self._remote_schema_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        operations_by_namespace = self._delegated_operations_by_namespace()
+        operations_by_namespace.setdefault(namespace, set()).add(operation)
+        await self._prefetch_remote_schemas_async(operations_by_namespace)
+        schema = self._remote_schema_cache.get(cache_key)
+        if schema is None:
+            raise MCAError(
+                "unknown_operation",
+                f"Mounted MCA service '{namespace}' has no operation '{operation}'.",
+                "operation",
+                404,
+            )
+        return schema
 
     def _composed_discovery(
         self,
@@ -344,6 +445,46 @@ class MCACompositionMixin:
             )
         for namespace, guides in mounted_guides.items():
             remote = self._remote_discovery(namespace, guide=",".join(guides))
+            if remote.get("guides") is not None:
+                result.setdefault("guides", {}).update(
+                    {
+                        f"{namespace}/{name}": content
+                        for name, content in remote["guides"].items()
+                    }
+                )
+        return result
+
+    async def _composed_discovery_async(
+        self,
+        guide: str | None,
+        operation_name: str | None,
+        schema_factory: Callable[[RegisteredRoute], Any],
+    ) -> dict[str, Any]:
+        """Asynchronously combine local discovery with mounted MCA data."""
+        if guide is None and operation_name is None:
+            result = await self.adiscovery(None, None, schema_factory)
+            remote_guides = await self._exposed_remote_guides_async()
+            if remote_guides:
+                result["available_guides"] = sorted(
+                    set(result.get("available_guides") or []) | remote_guides
+                )
+            return result
+
+        local_guides, mounted_guides = await self._split_remote_guides_async(guide)
+        result: dict[str, Any] = {}
+        if local_guides or operation_name is not None:
+            result.update(
+                await self.adiscovery(
+                    ",".join(local_guides) if local_guides else None,
+                    operation_name,
+                    schema_factory,
+                )
+            )
+        for namespace, guides in mounted_guides.items():
+            remote = await self._remote_discovery_async(
+                namespace,
+                guide=",".join(guides),
+            )
             if remote.get("guides") is not None:
                 result.setdefault("guides", {}).update(
                     {
@@ -481,6 +622,29 @@ class MCACompositionMixin:
             )
         return self._materialize_composed_schema(composed)
 
+    async def _compose_route_schema_async(
+        self,
+        route: RegisteredRoute,
+        schema: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Asynchronously overlay remote schemas onto one local route schema."""
+        composed = deepcopy(dict(schema))
+        target = route.meta("delegate_to")
+        if target is not None:
+            namespace, operation = self._delegate_target(target)
+            remote = await self._remote_operation_schema_async(namespace, operation)
+            self._compose_remote_request(
+                composed,
+                remote.request_schema or {},
+                route.operation,
+            )
+            self._compose_remote_response(
+                composed,
+                remote.response_schema,
+                route.operation,
+            )
+        return self._materialize_composed_schema(composed)
+
     def _route_guides(self, route: RegisteredRoute) -> list[str] | None:
         """Return local guides plus namespaced guides advertised by a delegate."""
         guides = list(route.meta("guides") or [])
@@ -494,11 +658,36 @@ class MCACompositionMixin:
             )
         return list(dict.fromkeys(guides)) or None
 
+    async def _route_guides_async(self, route: RegisteredRoute) -> list[str] | None:
+        """Asynchronously return local and delegated guide names for a route."""
+        guides = list(route.meta("guides") or [])
+        target = route.meta("delegate_to")
+        if target is not None:
+            namespace, operation = self._delegate_target(target)
+            remote_schema = await self._remote_operation_schema_async(namespace, operation)
+            guides.extend(
+                f"{namespace}/{name}"
+                for name in remote_schema.guides or []
+            )
+        return list(dict.fromkeys(guides)) or None
+
     def _exposed_remote_guides(self) -> set[str]:
         """Return private guide paths reachable through visible delegated routes."""
         guides: set[str] = set()
         for route in self._delegated_routes():
             route_guides = self._route_guides(route) or []
+            guides.update(
+                guide
+                for guide in route_guides
+                if "/" in guide and guide.partition("/")[0] in self._mounted_mcas
+            )
+        return guides
+
+    async def _exposed_remote_guides_async(self) -> set[str]:
+        """Asynchronously return private guides reachable through public routes."""
+        guides: set[str] = set()
+        for route in self._delegated_routes():
+            route_guides = await self._route_guides_async(route) or []
             guides.update(
                 guide
                 for guide in route_guides
@@ -518,6 +707,35 @@ class MCACompositionMixin:
             if "/" in name and name.partition("/")[0] in self._mounted_mcas
         }
         exposed = self._exposed_remote_guides() if remote_names else set()
+        local_names: list[str] = []
+        mounted_names: dict[str, list[str]] = {}
+        for name in names:
+            namespace, separator, remote_name = name.partition("/")
+            if separator and namespace in self._mounted_mcas:
+                if name not in exposed:
+                    raise MCAError(
+                        "unknown_guides",
+                        f"Unavailable guide(s): {name}.",
+                        "guide",
+                        404,
+                    )
+                mounted_names.setdefault(namespace, []).append(remote_name)
+            else:
+                local_names.append(name)
+        return local_names, mounted_names
+
+    async def _split_remote_guides_async(
+        self,
+        value: str | None,
+    ) -> tuple[list[str], dict[str, list[str]]]:
+        """Asynchronously separate local and validated private guide names."""
+        names = [] if value is None else [item.strip() for item in value.split(",")]
+        remote_names = {
+            name
+            for name in names
+            if "/" in name and name.partition("/")[0] in self._mounted_mcas
+        }
+        exposed = await self._exposed_remote_guides_async() if remote_names else set()
         local_names: list[str] = []
         mounted_names: dict[str, list[str]] = {}
         for name in names:
