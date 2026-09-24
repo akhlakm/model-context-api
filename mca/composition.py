@@ -16,7 +16,11 @@ from .schema import (is_generic_schema, materialize_schema,
 
 
 class MCAClient(Protocol):
-    """Client boundary used by a router to reach a mounted MCA service."""
+    """Client boundary used by a public router to reach a private MCA service.
+
+    Implementations may use HTTP, JSON-RPC, a message bus, or an in-process
+    adapter. The public router only depends on these two operations.
+    """
 
     def discover(
         self,
@@ -24,7 +28,11 @@ class MCAClient(Protocol):
         guide: str | None = None,
         operation: str | None = None,
     ) -> Any:
-        """Return a remote get_mca response as a model or JSON-like value."""
+        """Return a remote ``get_mca`` response as a model or JSON-like value.
+
+        ``guide`` and ``operation`` may contain comma-separated names when the
+        transport supports batched discovery.
+        """
 
     def call(
         self,
@@ -33,21 +41,38 @@ class MCAClient(Protocol):
         params: Mapping[str, Any] | None = None,
         data: Any = None,
     ) -> Any:
-        """Call a remote operation and return its JSON-compatible result."""
+        """Call a remote operation and return its JSON-compatible result.
+
+        ``params`` carries path/query-style values and ``data`` carries the
+        operation body. The composition layer does not prescribe the RPC wire
+        format.
+        """
 
 
 class MCACompositionMixin:
-    """Shared explicit-composition behavior for MCA adapters."""
+    """Add explicit private-router composition to a concrete MCA adapter.
+
+    A mounted client is never exposed as an independent public route. A local
+    route opts into composition with ``delegate_to="namespace.operation"``;
+    only that public route's discovery schema and guides are enriched.
+    """
 
     _namespace_pattern = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
 
     def __init__(self, *args: Any, **kwargs: Any):
+        """Initialize mounted clients and the cache of remote operation schemas."""
         self._mounted_mcas: dict[str, MCAClient] = {}
         self._remote_schema_cache: dict[tuple[str, str], APIRouteSchemaOut] = {}
         super().__init__(*args, **kwargs)
 
     def mount(self, namespace: str, client: MCAClient) -> None:
-        """Make a private MCA available for explicitly delegated routes."""
+        """Mount a private MCA for explicitly delegated public routes.
+
+        ``namespace`` becomes the first segment of every ``delegate_to``
+        target. Mounting alone does not expose or merge any private operation.
+
+        The client must provide callable ``discover`` and ``call`` methods.
+        """
         if not isinstance(namespace, str) or self._namespace_pattern.fullmatch(namespace) is None:
             raise ValueError(
                 "MCA mount namespace must start with a letter and contain only letters, numbers, '-' or '_'."
@@ -68,7 +93,11 @@ class MCACompositionMixin:
         namespace: str | None = None,
         operation: str | None = None,
     ) -> None:
-        """Clear cached discovery schemas, optionally for one mounted operation."""
+        """Clear cached remote schemas globally or for one mounted operation.
+
+        Use this after a private service deploys a schema change. Supplying an
+        operation requires its namespace; omitting both clears the full cache.
+        """
         if operation is not None and namespace is None:
             raise ValueError("A namespace is required when clearing one operation.")
         if namespace is None:
@@ -84,11 +113,13 @@ class MCACompositionMixin:
         self._remote_schema_cache.pop((namespace, operation), None)
 
     def _validate_delegate_option(self, options: Mapping[str, Any]) -> None:
+        """Validate a route's optional private operation target."""
         target = options.get("delegate_to")
         if target is not None:
             self._delegate_target(target)
 
     def _delegate_target(self, target: Any) -> tuple[str, str]:
+        """Parse and validate a ``namespace.operation`` delegation target."""
         if not isinstance(target, str):
             raise ValueError("delegate_to must use the form 'namespace.operation'.")
         namespace, separator, operation = target.partition(".")
@@ -99,6 +130,7 @@ class MCACompositionMixin:
         return namespace, operation
 
     def _route_metadata(self, endpoint: Any, options: Mapping[str, Any]) -> Mapping[str, Any]:
+        """Validate composition options before the base router records metadata."""
         self._validate_delegate_option(options)
         return super()._route_metadata(endpoint, options)
 
@@ -108,6 +140,7 @@ class MCACompositionMixin:
         method: str,
         operation: str,
     ) -> None:
+        """Prevent public operation names from colliding with mount namespaces."""
         super()._validate_route_registration(path, method, operation)
         if any(
             operation == namespace or operation.startswith(f"{namespace}.")
@@ -116,6 +149,7 @@ class MCACompositionMixin:
             raise ValueError(f"MCA operation {operation!r} conflicts with a mounted namespace.")
 
     def _delegated_routes(self) -> tuple[RegisteredRoute, ...]:
+        """Return visible public routes that explicitly delegate to a private MCA."""
         return tuple(
             route
             for route in self._routes.values()
@@ -125,6 +159,7 @@ class MCACompositionMixin:
         )
 
     def _delegated_operations_by_namespace(self) -> dict[str, set[str]]:
+        """Group delegated private operation names by mounted namespace."""
         operations: dict[str, set[str]] = {}
         for route in self._delegated_routes():
             namespace, operation = self._delegate_target(route.meta("delegate_to"))
@@ -138,6 +173,7 @@ class MCACompositionMixin:
         guide: str | None = None,
         operation: str | None = None,
     ) -> dict[str, Any]:
+        """Fetch and validate one mounted service's discovery response."""
         client = self._mounted_mcas[namespace]
         try:
             value = client.discover(guide=guide, operation=operation)
@@ -157,6 +193,7 @@ class MCACompositionMixin:
 
     @staticmethod
     def _remote_error(namespace: str, action: str) -> MCAError:
+        """Create the stable public error used when a mounted service fails."""
         return MCAError(
             "upstream_unavailable",
             f"Mounted MCA service '{namespace}' could not {action}.",
@@ -169,6 +206,7 @@ class MCACompositionMixin:
         namespace: str,
         operation: str,
     ) -> APIRouteSchemaOut:
+        """Return one cached remote schema, fetching missing schemas in batches."""
         cache_key = (namespace, operation)
         cached = self._remote_schema_cache.get(cache_key)
         if cached is not None:
@@ -239,6 +277,12 @@ class MCACompositionMixin:
         operation_name: str | None,
         schema_factory: Callable[[RegisteredRoute], Any],
     ) -> dict[str, Any]:
+        """Combine local discovery with only the remote guides and schemas exposed publicly.
+
+        Root discovery batches schema requests per mounted service. Guide
+        requests are grouped by namespace so one request can satisfy several
+        nested private guide names.
+        """
         if guide is None and operation_name is None:
             result = self.discovery(None, None, schema_factory)
             remote_guides = self._exposed_remote_guides()
@@ -271,10 +315,12 @@ class MCACompositionMixin:
 
     @staticmethod
     def _is_generic_schema(schema: Any) -> bool:
+        """Return whether a local schema is too generic to improve a remote one."""
         return is_generic_schema(schema)
 
     @staticmethod
     def _rewrite_component_refs(value: Any, names: Mapping[str, str]) -> Any:
+        """Rewrite component references after names are collision-resolved."""
         return rewrite_component_refs(value, names)
 
     @staticmethod
@@ -284,6 +330,7 @@ class MCACompositionMixin:
         fragment: Mapping[str, Any],
         public_operation: str,
     ) -> dict[str, Any]:
+        """Merge a remote schema fragment and its referenced components into a target."""
         return merge_remote_fragment(
             target_schema,
             remote_schema,
@@ -293,6 +340,7 @@ class MCACompositionMixin:
 
     @staticmethod
     def _materialize_schema(schema: Any) -> Any:
+        """Inline component references for the public discovery payload."""
         return materialize_schema(schema)
 
     def _compose_remote_request(
@@ -301,6 +349,7 @@ class MCACompositionMixin:
         remote_request: Mapping[str, Any],
         public_operation: str,
     ) -> None:
+        """Replace a generic public body schema with the delegated body contract."""
         remote_properties = remote_request.get("properties", {})
         remote_body = (
             remote_properties.get("body")
@@ -343,6 +392,7 @@ class MCACompositionMixin:
         remote_response: Mapping[str, Any] | None,
         public_operation: str,
     ) -> None:
+        """Replace a generic public response schema with the delegated response contract."""
         if remote_response is None:
             return
         local_response = composed.get("response_schema")
@@ -363,6 +413,7 @@ class MCACompositionMixin:
         composed["response_schema"] = response_fragment
 
     def _materialize_composed_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
+        """Make request and response schemas self-contained before serialization."""
         for key in ("request_schema", "response_schema"):
             schema[key] = self._materialize_schema(schema.get(key))
         return schema
@@ -391,6 +442,7 @@ class MCACompositionMixin:
         return self._materialize_composed_schema(composed)
 
     def _route_guides(self, route: RegisteredRoute) -> list[str] | None:
+        """Return local guides plus namespaced guides advertised by a delegate."""
         guides = list(route.meta("guides") or [])
         target = route.meta("delegate_to")
         if target is not None:
@@ -403,6 +455,7 @@ class MCACompositionMixin:
         return list(dict.fromkeys(guides)) or None
 
     def _exposed_remote_guides(self) -> set[str]:
+        """Return private guide paths reachable through visible delegated routes."""
         guides: set[str] = set()
         for route in self._delegated_routes():
             route_guides = self._route_guides(route) or []
@@ -417,6 +470,7 @@ class MCACompositionMixin:
         self,
         value: str | None,
     ) -> tuple[list[str], dict[str, list[str]]]:
+        """Separate local guide names from validated namespaced private guides."""
         names = [] if value is None else [item.strip() for item in value.split(",")]
         remote_names = {
             name

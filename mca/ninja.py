@@ -26,6 +26,7 @@ _PATH_PARAMETER = re.compile(r"\{([^}]+)\}")
 
 
 def _request_path(path_template: str, path_params: Mapping[str, Any]) -> str:
+    """Fill a Ninja route template with URL-quoted path parameter values."""
     return _PATH_PARAMETER.sub(
         lambda match: quote(
             str(path_params.get(match.group(1), match.group(0))),
@@ -36,7 +37,10 @@ def _request_path(path_template: str, path_params: Mapping[str, Any]) -> str:
 
 
 class MCAExecutionError(Exception):
+    """Raised when a registered Ninja operation cannot be executed internally."""
+
     def __init__(self, operation: str, detail: str, response: HttpResponseBase | None = None):
+        """Create an execution error and optionally retain the HTTP response."""
         super().__init__(detail)
         self.operation = operation
         self.detail = detail
@@ -44,6 +48,13 @@ class MCAExecutionError(Exception):
 
 
 class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
+    """MCA adapter for Django Ninja APIs.
+
+    The wrapped Ninja API remains the transport owner. This adapter registers
+    MCA discovery and operation metadata with it, derives schemas from OpenAPI,
+    and provides helpers for invoking registered operations internally.
+    """
+
     def __init__(
         self,
         api: Any,
@@ -55,6 +66,11 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         help: str | None = None,
         error_responses: Mapping[int, Any] | None = None,
     ):
+        """Create a router bound to a Ninja ``API`` or ``Router`` instance.
+
+        ``error_responses`` extends or overrides the default discovery errors
+        in the generated Ninja/OpenAPI registration.
+        """
         self.api = api
         self._bound_api: NinjaAPI | None = None
         self.error_responses = error_responses or {}
@@ -67,6 +83,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         )
 
     def _discovery_endpoints(self) -> Iterable[tuple[str, str, F, Mapping[str, Any]]]:
+        """Define the Ninja discovery endpoint and its standard error responses."""
         response = {
             400: ErrorOut,
             404: ErrorOut,
@@ -84,6 +101,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
                 description="Comma-separated API operation names whose schemas should be read.",
             ),
         ):
+            """Return discovery data or a Ninja-formatted MCA error response."""
             try:
                 return self._get_mca(guide, operation_name)
             except MCAError as exc:
@@ -108,6 +126,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         options: Mapping[str, Any],
         **variant: Any,
     ) -> F:
+        """Register an operation with the bound Ninja API and preserve variant options."""
         api_register = getattr(self.api, route.method.lower())
         route_options = dict(options)
         route_options.update({key: variant[key] for key in ("include_in_schema",) if key in variant})
@@ -125,6 +144,16 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         *,
         allow_anonymous: bool = False,
     ) -> HttpResponseBase:
+        """Execute a registered synchronous Ninja operation against an existing request.
+
+        The request is passed through Ninja's normal validation and response
+        handling. Set ``allow_anonymous`` only when an internal caller has
+        already performed the required authorization checks.
+
+        Raises:
+            MCAExecutionError: If the operation is asynchronous or not bound
+                to the Ninja API.
+        """
         route = self.route(operation)
         ninja_operation = self._ninja_operation(route.operation)
         if inspect.iscoroutinefunction(ninja_operation.view_func):
@@ -149,6 +178,14 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         *,
         allow_anonymous: bool = False,
     ) -> HttpResponseBase:
+        """Build and execute a Ninja request from path, query, and JSON values.
+
+        When ``source_request`` is provided, user, session, cookie, and safe
+        request metadata are copied to the synthetic request.
+
+        ``body`` is JSON-encoded when it is not ``None``. The method is intended
+        for trusted internal delegation and still runs Ninja validation.
+        """
         route = self.route(operation)
         path_values = dict(path_params or {})
         request = self._build_execution_request(
@@ -170,6 +207,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         request: HttpRequest,
         source_request: HttpRequest,
     ) -> None:
+        """Copy caller identity and safe request context to a synthetic request."""
         request.user = source_request.user
         request.COOKIES = source_request.COOKIES.copy()
         if hasattr(source_request, "session"):
@@ -199,6 +237,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         query_params: Mapping[str, Any] | None,
         body: Any,
     ) -> HttpRequest:
+        """Construct a Django request that mirrors a direct HTTP invocation."""
         from django.contrib.auth.models import AnonymousUser
         from django.test import RequestFactory
 
@@ -221,10 +260,13 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         if source_request is None:
             request.user = AnonymousUser()
         else:
+            # Transport fields belong to the synthetic request; identity and
+            # application context are the only values inherited from the caller.
             self._copy_request_context(request, source_request)
         return request
 
     def _ninja_operation(self, operation: str) -> Any:
+        """Find a bound Ninja operation by its published operation ID."""
         api = self._operation_api()
         for bound_router in api._get_bound_routers():
             for path_view in bound_router.path_operations.values():
@@ -237,9 +279,11 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         )
 
     def _get_mca(self, guide: str | None, operation_name: str | None):
+        """Serve composed discovery through the Ninja adapter."""
         return self._composed_discovery(guide, operation_name, self._route_schema)
 
     def _operation_api(self) -> Any:
+        """Return an API object capable of generating OpenAPI for this registry."""
         if not isinstance(self.api, Router):
             return self.api
         if self._bound_api is None:
@@ -247,6 +291,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         return self._bound_api
 
     def _openapi_schema(self) -> dict[str, Any]:
+        """Generate the OpenAPI document for the bound API or router."""
         api = self._operation_api()
         if isinstance(self.api, Router):
             return api.get_openapi_schema(path_prefix="")
@@ -257,6 +302,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         schema: Mapping[str, Any],
         name: str,
     ) -> dict[str, Any] | None:
+        """Find an OpenAPI operation by ``operationId``."""
         for path_data in schema.get("paths", {}).values():
             for operation in path_data.values():
                 if isinstance(operation, dict) and operation.get("operationId") == name:
@@ -264,6 +310,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         return None
 
     def _openapi_operation(self, name: str) -> dict[str, Any] | None:
+        """Return one operation from a freshly generated OpenAPI document."""
         return self._find_openapi_operation(self._openapi_schema(), name)
 
     @staticmethod
@@ -271,6 +318,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         operation: Mapping[str, Any],
         route_path: str,
     ) -> tuple[dict[str, dict[str, Any]], set[str]]:
+        """Convert OpenAPI path/query parameters into the MCA request envelope."""
         path_properties: dict[str, Any] = {}
         path_required: list[str] = []
         query_properties: dict[str, Any] = {}
@@ -322,6 +370,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         route_path: str,
         components: Mapping[str, Any],
     ) -> dict[str, Any] | None:
+        """Build a request schema and retain only components referenced by it."""
         sections, required_sections = self._openapi_parameter_sections(operation, route_path)
         body_schema = (
             operation.get("requestBody", {})
@@ -345,6 +394,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         operation: Mapping[str, Any],
         components: Mapping[str, Any],
     ) -> dict[str, Any] | None:
+        """Extract the first successful JSON response schema from OpenAPI."""
         response_schema = None
         for status in (200, 201):
             response_schema = (
@@ -363,6 +413,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         return attach_components(response_schema, response_components)
 
     def _route_schema(self, route: RegisteredRoute) -> dict[str, Any]:
+        """Build and compose one operation schema from the Ninja OpenAPI document."""
         name = route.operation
         discovery_route = route.discovery_route
         openapi_schema = self._openapi_schema()
@@ -395,6 +446,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         schema: Any,
         components: Mapping[str, Any],
     ) -> dict[str, Any]:
+        """Return the transitive OpenAPI components referenced by a schema."""
         pending = list(NinjaMCARouter._component_references(schema))
         selected: dict[str, Any] = {}
         while pending:
@@ -408,6 +460,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
 
     @staticmethod
     def _component_references(value: Any):
+        """Yield component names referenced anywhere in a JSON-like schema."""
         if isinstance(value, dict):
             reference = value.get("$ref")
             prefix = "#/components/schemas/"

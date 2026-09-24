@@ -8,12 +8,16 @@ from pydantic import BaseModel, ConfigDict, Field
 
 
 class ErrorOut(BaseModel):
+    """Stable error envelope shared by Pydantic, Ninja, and MCP responses."""
+
     code: str = Field(..., description="Stable machine-readable error code.")
     detail: str = Field(..., description="Human-readable explanation of the error.")
     field: str | None = Field(None, description="Related input field, when applicable.")
 
 
 class MCAResponseOut(BaseModel):
+    """Root discovery document for one MCA registry."""
+
     title: str = Field(..., description="Title of the Model Context API discovery document.")
     version: float = Field(..., description="Version of the discovery document format.")
     index: str | None = Field(
@@ -34,6 +38,8 @@ class MCAResponseOut(BaseModel):
 
 
 class APIRouteSchemaOut(BaseModel):
+    """Discovery description of one operation's route and schemas."""
+
     route: str = Field(..., description="HTTP method and relative route template.")
     description: str = Field(..., description="Human-readable operation description.")
     guides: list[str] | None = Field(
@@ -46,6 +52,8 @@ class APIRouteSchemaOut(BaseModel):
 
 
 class MCADiscoveryOut(BaseModel):
+    """Response containing requested guide content and/or operation schemas."""
+
     guides: dict[str, str] | None = Field(
         None,
         exclude_if=lambda value: value is None,
@@ -59,6 +67,8 @@ class MCADiscoveryOut(BaseModel):
 
 
 class DiscoveryParams(BaseModel):
+    """Query parameters accepted by the Pydantic discovery operation."""
+
     model_config = ConfigDict(populate_by_name=True)
 
     guide: str | None = Field(None, description="Comma-separated guide names to read.")

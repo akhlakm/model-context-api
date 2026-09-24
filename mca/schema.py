@@ -90,6 +90,7 @@ def _transform_refs(
     value: Any,
     on_reference: Callable[[dict[str, Any], str], Any | None],
 ) -> Any:
+    """Walk a JSON-like schema and let a callback replace component references."""
     if isinstance(value, list):
         return [_transform_refs(item, on_reference) for item in value]
     if not isinstance(value, dict):
@@ -107,8 +108,13 @@ def _transform_refs(
 
 
 def rewrite_component_refs(value: Any, names: Mapping[str, str]) -> Any:
-    """Rewrite component references after component names have been merged."""
+    """Rewrite component references after component names have been merged.
+
+    The traversal preserves sibling keys next to ``$ref`` so descriptions or
+    validation metadata attached by an upstream schema are not discarded.
+    """
     def on_reference(value: dict[str, Any], name: str) -> dict[str, Any]:
+        """Rewrite a reference and recursively preserve its sibling values."""
         rewritten = {
             key: _transform_refs(item, on_reference)
             for key, item in value.items()
@@ -175,6 +181,7 @@ def materialize_schema(schema: Any) -> Any:
     recursive = False
 
     def definitions_reference(value: dict[str, Any], name: str) -> dict[str, Any] | None:
+        """Keep recursive references as local ``$defs`` references."""
         if name not in components:
             return None
         rewritten = {"$ref": f"#/$defs/{name}"}
@@ -188,6 +195,7 @@ def materialize_schema(schema: Any) -> Any:
         return rewritten
 
     def expanding_reference(value: dict[str, Any], name: str) -> dict[str, Any] | None:
+        """Inline non-recursive components while preserving recursive cycles."""
         nonlocal recursive
         if name not in components:
             return None
