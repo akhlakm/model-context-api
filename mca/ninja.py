@@ -370,7 +370,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         guides = self._route_guides(route)
         if guides:
             schema["guides"] = guides
-        return schema
+        return self._compose_route_schema(route, schema)
 
     @staticmethod
     def _referenced_components(

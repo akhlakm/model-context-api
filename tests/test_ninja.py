@@ -77,6 +77,13 @@ class FakeAPI:
                                 "schema": {"type": "integer"},
                             },
                         ],
+                        "requestBody": {
+                            "content": {
+                                "application/json": {
+                                    "schema": {"type": "object"},
+                                },
+                            },
+                        },
                         "responses": {
                             "200": {
                                 "description": "OK",
@@ -281,6 +288,121 @@ class NinjaMCARouterPackageTests(TestCase):
         self.assertIn("get_invoice", operation_details["operations"])
         with self.assertRaisesRegex(MCAError, "Unavailable operation"):
             router._get_mca(None, "billing.get_invoice")
+
+    def test_delegated_schema_composes_remote_body_and_response_and_caches(self):
+        class SchemaClient(FakeMCAClient):
+            def discover(self, *, guide=None, operation=None):
+                if operation == "get_invoice":
+                    self.discovery_calls.append((guide, operation))
+                    return {
+                        "operations": {
+                            "get_invoice": {
+                                "route": "GET private/invoices/{invoice_id}",
+                                "description": "Read a private invoice.",
+                                "request_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "body": {
+                                            "$ref": "#/components/schemas/PrivateFilter",
+                                        },
+                                    },
+                                    "required": ["body"],
+                                    "components": {
+                                        "schemas": {
+                                            "PrivateFilter": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "include_history": {"type": "boolean"},
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                                "response_schema": {
+                                    "$ref": "#/components/schemas/PrivateInvoice",
+                                    "components": {
+                                        "schemas": {
+                                            "PrivateInvoice": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "invoice_id": {"type": "integer"},
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    }
+                return super().discover(guide=guide, operation=operation)
+
+        api = FakeAPI()
+        router = NinjaMCARouter(api)
+        client = SchemaClient()
+        router.mount("billing", client)
+
+        @router.register(
+            "/invoices/{invoice_id}",
+            response=dict,
+            delegate_to="billing.get_invoice",
+        )
+        def get_invoice(request, invoice_id: int):
+            return {}
+
+        schema = router._route_schema(router.route("get_invoice"))
+        repeated = router._route_schema(router.route("get_invoice"))
+        request_schema = schema["request_schema"]
+        response_schema = schema["response_schema"]
+
+        self.assertIn("path_params", request_schema["properties"])
+        self.assertEqual(
+            request_schema["properties"]["body"]["type"],
+            "object",
+        )
+        self.assertEqual(
+            response_schema["type"],
+            "object",
+        )
+        self.assertIn("include_history", request_schema["properties"]["body"]["properties"])
+        self.assertIn("invoice_id", response_schema["properties"])
+        self.assertNotIn("components", request_schema)
+        self.assertNotIn("components", response_schema)
+        self.assertNotIn("#/components/", repr(schema))
+        self.assertEqual(schema, repeated)
+        self.assertEqual(client.discovery_calls.count((None, "get_invoice")), 1)
+
+        router.clear_remote_schema_cache("billing", "get_invoice")
+        router._route_schema(router.route("get_invoice"))
+        self.assertEqual(client.discovery_calls.count((None, "get_invoice")), 2)
+
+    def test_schema_materializer_uses_defs_for_recursive_components(self):
+        router = NinjaMCARouter(FakeAPI())
+
+        schema = router._materialize_schema(
+            {
+                "$ref": "#/components/schemas/Node",
+                "components": {
+                    "schemas": {
+                        "Node": {
+                            "type": "object",
+                            "properties": {
+                                "value": {"type": "integer"},
+                                "child": {"$ref": "#/components/schemas/Node"},
+                            },
+                        },
+                    },
+                },
+            }
+        )
+
+        self.assertEqual(schema["type"], "object")
+        self.assertEqual(schema["properties"]["value"]["type"], "integer")
+        self.assertEqual(
+            schema["properties"]["child"]["$ref"],
+            "#/$defs/Node",
+        )
+        self.assertIn("Node", schema["$defs"])
+        self.assertNotIn("components", schema)
 
     def test_public_handler_can_authenticate_then_call_private_client(self):
         events = []

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any, Protocol
 
 from pydantic import ValidationError
@@ -40,6 +41,7 @@ class MCACompositionMixin:
 
     def __init__(self, *args: Any, **kwargs: Any):
         self._mounted_mcas: dict[str, MCAClient] = {}
+        self._remote_schema_cache: dict[tuple[str, str], APIRouteSchemaOut] = {}
         super().__init__(*args, **kwargs)
 
     def mount(self, namespace: str, client: MCAClient) -> None:
@@ -58,6 +60,26 @@ class MCACompositionMixin:
         if not callable(getattr(client, "discover", None)) or not callable(getattr(client, "call", None)):
             raise TypeError("MCA client must provide discover() and call() methods.")
         self._mounted_mcas[namespace] = client
+
+    def clear_remote_schema_cache(
+        self,
+        namespace: str | None = None,
+        operation: str | None = None,
+    ) -> None:
+        """Clear cached discovery schemas, optionally for one mounted operation."""
+        if operation is not None and namespace is None:
+            raise ValueError("A namespace is required when clearing one operation.")
+        if namespace is None:
+            self._remote_schema_cache.clear()
+            return
+        if namespace not in self._mounted_mcas:
+            raise ValueError(f"MCA namespace {namespace!r} is not mounted.")
+        if operation is None:
+            for key in tuple(self._remote_schema_cache):
+                if key[0] == namespace:
+                    del self._remote_schema_cache[key]
+            return
+        self._remote_schema_cache.pop((namespace, operation), None)
 
     def _validate_delegate_option(self, options: Mapping[str, Any]) -> None:
         target = options.get("delegate_to")
@@ -138,6 +160,10 @@ class MCACompositionMixin:
         namespace: str,
         operation: str,
     ) -> APIRouteSchemaOut:
+        cache_key = (namespace, operation)
+        cached = self._remote_schema_cache.get(cache_key)
+        if cached is not None:
+            return cached
         result = self._remote_discovery(namespace, operation=operation)
         operations = result.get("operations") or {}
         if operation not in operations:
@@ -148,7 +174,7 @@ class MCACompositionMixin:
                 404,
             )
         try:
-            return APIRouteSchemaOut.model_validate(operations[operation])
+            schema = APIRouteSchemaOut.model_validate(operations[operation])
         except ValidationError as exc:
             raise MCAError(
                 "invalid_upstream_response",
@@ -156,6 +182,229 @@ class MCACompositionMixin:
                 "service",
                 502,
             ) from exc
+        self._remote_schema_cache[cache_key] = schema
+        return schema
+
+    @staticmethod
+    def _is_generic_schema(schema: Any) -> bool:
+        """Return whether a local schema carries no useful structural contract."""
+        if not isinstance(schema, Mapping) or not schema:
+            return True
+        if "$ref" in schema:
+            return False
+        if schema.get("type") not in (None, "object"):
+            return False
+        return not any(
+            key in schema
+            for key in (
+                "properties",
+                "items",
+                "enum",
+                "const",
+                "allOf",
+                "anyOf",
+                "oneOf",
+            )
+        )
+
+    @staticmethod
+    def _rewrite_component_refs(value: Any, names: Mapping[str, str]) -> Any:
+        if isinstance(value, list):
+            return [MCACompositionMixin._rewrite_component_refs(item, names) for item in value]
+        if not isinstance(value, dict):
+            return value
+        rewritten = {
+            key: MCACompositionMixin._rewrite_component_refs(item, names)
+            for key, item in value.items()
+        }
+        reference = rewritten.get("$ref")
+        prefix = "#/components/schemas/"
+        if isinstance(reference, str) and reference.startswith(prefix):
+            name = reference[len(prefix):]
+            rewritten["$ref"] = f"{prefix}{names.get(name, name)}"
+        return rewritten
+
+    @classmethod
+    def _merge_remote_fragment(
+        cls,
+        target_schema: dict[str, Any],
+        remote_schema: Mapping[str, Any],
+        fragment: Mapping[str, Any],
+        public_operation: str,
+    ) -> dict[str, Any]:
+        """Copy a remote fragment and its components into a public schema."""
+        remote_components = (
+            remote_schema.get("components", {}).get("schemas", {})
+            if isinstance(remote_schema.get("components", {}), Mapping)
+            else {}
+        )
+        target_components = target_schema.setdefault("components", {}).setdefault("schemas", {})
+        names: dict[str, str] = {}
+        for name, component in remote_components.items():
+            candidate = name
+            if candidate in target_components and target_components[candidate] != component:
+                candidate = f"{public_operation}__{name}"
+                suffix = 2
+                while candidate in target_components and target_components[candidate] != component:
+                    candidate = f"{public_operation}__{name}_{suffix}"
+                    suffix += 1
+            names[name] = candidate
+
+        for name, component in remote_components.items():
+            candidate = names[name]
+            if candidate not in target_components:
+                target_components[candidate] = cls._rewrite_component_refs(
+                    deepcopy(component),
+                    names,
+                )
+
+        if not target_components:
+            target_schema.pop("components", None)
+        return cls._rewrite_component_refs(deepcopy(fragment), names)
+
+    @classmethod
+    def _materialize_schema(cls, schema: Any) -> Any:
+        """Return a self-contained JSON Schema fragment without MCA components."""
+        if not isinstance(schema, Mapping):
+            return schema
+
+        materialized = deepcopy(dict(schema))
+        component_container = materialized.pop("components", {})
+        components = (
+            component_container.get("schemas", {})
+            if isinstance(component_container, Mapping)
+            else {}
+        )
+        if not isinstance(components, Mapping) or not components:
+            return materialized
+
+        resolving: set[str] = set()
+        recursive = False
+
+        def definitions_schema(value: Any) -> Any:
+            if isinstance(value, list):
+                return [definitions_schema(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+            reference = value.get("$ref")
+            prefix = "#/components/schemas/"
+            if isinstance(reference, str) and reference.startswith(prefix):
+                name = reference[len(prefix):]
+                if name in components:
+                    rewritten: dict[str, Any] = {"$ref": f"#/$defs/{name}"}
+                    rewritten.update(
+                        {
+                            key: definitions_schema(item)
+                            for key, item in value.items()
+                            if key != "$ref"
+                        }
+                    )
+                    return rewritten
+            return {key: definitions_schema(item) for key, item in value.items()}
+
+        def expand(value: Any) -> Any:
+            nonlocal recursive
+            if isinstance(value, list):
+                return [expand(item) for item in value]
+            if not isinstance(value, dict):
+                return value
+
+            reference = value.get("$ref")
+            prefix = "#/components/schemas/"
+            if isinstance(reference, str) and reference.startswith(prefix):
+                name = reference[len(prefix):]
+                if name in components:
+                    if name in resolving:
+                        recursive = True
+                        expanded: dict[str, Any] = {"$ref": f"#/$defs/{name}"}
+                    else:
+                        resolving.add(name)
+                        expanded = expand(deepcopy(components[name]))
+                        resolving.remove(name)
+                    expanded.update(
+                        {
+                            key: expand(item)
+                            for key, item in value.items()
+                            if key != "$ref"
+                        }
+                    )
+                    return expanded
+            return {key: expand(item) for key, item in value.items()}
+
+        materialized = expand(materialized)
+        if recursive and isinstance(materialized, dict):
+            materialized["$defs"] = {
+                name: definitions_schema(component)
+                for name, component in components.items()
+            }
+        return materialized
+
+    def _compose_route_schema(
+        self,
+        route: RegisteredRoute,
+        schema: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        """Overlay remote body/response schemas without exposing delegation metadata."""
+        composed = deepcopy(dict(schema))
+        target = route.meta("delegate_to")
+        if target is None:
+            for key in ("request_schema", "response_schema"):
+                composed[key] = self._materialize_schema(composed.get(key))
+            return composed
+
+        namespace, operation = self._delegate_target(target)
+        remote = self._remote_operation_schema(namespace, operation)
+
+        remote_request = remote.request_schema or {}
+        remote_body = (
+            remote_request.get("properties", {}).get("body")
+            if isinstance(remote_request.get("properties", {}), Mapping)
+            else None
+        )
+        request_schema = composed.get("request_schema")
+        if remote_body is not None and isinstance(request_schema, dict):
+            request_properties = request_schema.setdefault("properties", {})
+            local_body = request_properties.get("body")
+            if local_body is not None and self._is_generic_schema(local_body):
+                body_schema = self._merge_remote_fragment(
+                    request_schema,
+                    remote_request,
+                    remote_body,
+                    route.operation,
+                )
+                if (
+                    isinstance(local_body, Mapping)
+                    and local_body.get("description") is not None
+                    and "description" not in body_schema
+                ):
+                    body_schema["description"] = local_body["description"]
+                request_properties["body"] = body_schema
+                required = request_schema.setdefault("required", [])
+                if "body" in remote_request.get("required", []):
+                    if "body" not in required:
+                        required.append("body")
+                else:
+                    request_schema["required"] = [name for name in required if name != "body"]
+
+        remote_response = remote.response_schema
+        if remote_response is not None:
+            local_response = composed.get("response_schema")
+            if local_response is None or self._is_generic_schema(local_response):
+                response_container: dict[str, Any] = {}
+                response_fragment = deepcopy(remote_response)
+                response_fragment.pop("components", None)
+                response_fragment = self._merge_remote_fragment(
+                    response_container,
+                    remote_response,
+                    response_fragment,
+                    route.operation,
+                )
+                if response_container.get("components"):
+                    response_fragment["components"] = response_container["components"]
+                composed["response_schema"] = response_fragment
+        for key in ("request_schema", "response_schema"):
+            composed[key] = self._materialize_schema(composed.get(key))
+        return composed
 
     def _route_guides(self, route: RegisteredRoute) -> list[str] | None:
         guides = list(route.meta("guides") or [])

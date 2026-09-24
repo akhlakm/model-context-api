@@ -32,6 +32,7 @@ from demo.rpc import billing_rpc
 class NinjaCompositionExampleTests(TestCase):
     def setUp(self):
         billing_rpc.calls.clear()
+        public_mca.clear_remote_schema_cache()
 
     def test_public_discovery_exposes_only_explicit_public_operation(self):
         discovery = public_mca._get_mca(None, None)
@@ -62,6 +63,48 @@ class NinjaCompositionExampleTests(TestCase):
                 for name, schema in details["operations"].items()
             },
             expected_routes,
+        )
+
+    def test_public_discovery_composes_private_schemas_and_caches_them(self):
+        details = public_mca._get_mca(
+            None,
+            "make_public_invoice,update_public_invoice",
+        )
+        repeated = public_mca._get_mca(
+            None,
+            "make_public_invoice,update_public_invoice",
+        )
+
+        create_schema = details["operations"]["make_public_invoice"]
+        self.assertEqual(
+            create_schema["request_schema"]["properties"]["body"]["type"],
+            "object",
+        )
+        self.assertEqual(
+            create_schema["request_schema"]["properties"]["body"]["required"],
+            ["customer", "total"],
+        )
+        self.assertEqual(
+            create_schema["response_schema"]["type"],
+            "object",
+        )
+        self.assertIn(
+            "invoice_id",
+            create_schema["response_schema"]["properties"],
+        )
+        self.assertNotIn("components", create_schema["request_schema"])
+        self.assertNotIn("components", create_schema["response_schema"])
+
+        update_schema = repeated["operations"]["update_public_invoice"]
+        self.assertIn("path_params", update_schema["request_schema"]["properties"])
+        self.assertEqual(
+            update_schema["request_schema"]["properties"]["body"]["type"],
+            "object",
+        )
+        self.assertNotIn("delegate_to", create_schema)
+        self.assertEqual(
+            [call["operation"] for call in billing_rpc.calls if call["method"] == "get_mca"],
+            ["make_invoice", "update_invoice"],
         )
 
     def test_public_handler_authenticates_checks_acl_and_uses_rpc_client(self):

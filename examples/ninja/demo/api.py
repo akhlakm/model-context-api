@@ -5,13 +5,11 @@ from pathlib import Path
 from typing import Any
 
 from django.http import HttpRequest
-from ninja import Router
+from ninja import Body, Router
 from ninja.errors import HttpError
 
 from mca.ninja import NinjaMCARouter
 
-from .private import (InvoiceCreate, InvoiceDeletedOut, InvoiceOut,
-                      InvoiceUpdate)
 from .rpc import billing_rpc
 
 LOGGER = logging.getLogger(__name__)
@@ -59,12 +57,12 @@ def require_access(
 @public_mca.register(
     "/invoices/{invoice_id}",
     operation_id="get_public_invoice",
-    response=InvoiceOut,
+    response=dict[str, Any],
     auth=demo_auth,
     guides=["api.md"],
     delegate_to="billing.get_invoice",
 )
-def get_public_invoice(request: HttpRequest, invoice_id: int) -> InvoiceOut:
+def get_public_invoice(request: HttpRequest, invoice_id: int) -> dict[str, Any]:
     """Authenticate, authorize, track, and then delegate invoice access."""
     require_access(request, "billing:read", invoice_id)
 
@@ -77,29 +75,31 @@ def get_public_invoice(request: HttpRequest, invoice_id: int) -> InvoiceOut:
         "get_invoice",
         params={"invoice_id": invoice_id},
     )
-    return InvoiceOut.model_validate(result)
+    return result
 
 
 @public_mca.register(
     "/invoices",
     operation_id="make_public_invoice",
-    response=InvoiceOut,
+    response=dict[str, Any],
     auth=demo_auth,
     guides=["api.md"],
     delegate_to="billing.make_invoice",
 )
-def make_public_invoice(request: HttpRequest, payload: InvoiceCreate) -> InvoiceOut:
+def make_public_invoice(
+    request: HttpRequest,
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
     """Authorize and delegate invoice creation."""
     require_access(request, "billing:write")
     LOGGER.info("invoice_create subject=%s", request.auth["subject"])
-    result = billing_rpc.call("make_invoice", data=payload.model_dump())
-    return InvoiceOut.model_validate(result)
+    return billing_rpc.call("make_invoice", data=payload)
 
 
 @public_mca.register(
     "/invoices/{invoice_id}",
     operation_id="update_public_invoice",
-    response=InvoiceOut,
+    response=dict[str, Any],
     auth=demo_auth,
     guides=["api.md"],
     delegate_to="billing.update_invoice",
@@ -107,8 +107,8 @@ def make_public_invoice(request: HttpRequest, payload: InvoiceCreate) -> Invoice
 def update_public_invoice(
     request: HttpRequest,
     invoice_id: int,
-    payload: InvoiceUpdate,
-) -> InvoiceOut:
+    payload: dict[str, Any] = Body(...),
+) -> dict[str, Any]:
     """Authorize and delegate invoice updates."""
     require_access(request, "billing:write", invoice_id)
     LOGGER.info(
@@ -119,20 +119,20 @@ def update_public_invoice(
     result = billing_rpc.call(
         "update_invoice",
         params={"invoice_id": invoice_id},
-        data=payload.model_dump(exclude_unset=True),
+        data=payload,
     )
-    return InvoiceOut.model_validate(result)
+    return result
 
 
 @public_mca.register(
     "/invoices/{invoice_id}",
     operation_id="remove_public_invoice",
-    response=InvoiceDeletedOut,
+    response=dict[str, Any],
     auth=demo_auth,
     guides=["api.md"],
     delegate_to="billing.remove_invoice",
 )
-def remove_public_invoice(request: HttpRequest, invoice_id: int) -> InvoiceDeletedOut:
+def remove_public_invoice(request: HttpRequest, invoice_id: int) -> dict[str, Any]:
     """Authorize and delegate invoice deletion."""
     require_access(request, "billing:delete", invoice_id)
     LOGGER.info(
@@ -144,4 +144,4 @@ def remove_public_invoice(request: HttpRequest, invoice_id: int) -> InvoiceDelet
         "remove_invoice",
         params={"invoice_id": invoice_id},
     )
-    return InvoiceDeletedOut.model_validate(result)
+    return result

@@ -1,5 +1,6 @@
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import Any
 from unittest import TestCase
 
 from pydantic import BaseModel
@@ -228,6 +229,108 @@ class PydanticMCARouterPackageTests(TestCase):
         )
         self.assertIsInstance(guide_result, ErrorOut)
         self.assertEqual(guide_result.code, "unknown_guides")
+
+    def test_delegated_schema_composes_remote_body_and_response_for_generic_types(self):
+        class SchemaClient(FakeMCAClient):
+            def discover(self, *, guide=None, operation=None):
+                if operation == "make_invoice":
+                    self.discovery_calls.append((guide, operation))
+                    return {
+                        "operations": {
+                            "make_invoice": {
+                                "route": "POST private/invoices",
+                                "description": "Create an invoice.",
+                                "request_schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "body": {
+                                            "$ref": "#/components/schemas/PrivateInvoiceCreate",
+                                        },
+                                    },
+                                    "required": ["body"],
+                                    "components": {
+                                        "schemas": {
+                                            "PrivateInvoiceCreate": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "customer": {"type": "string"},
+                                                    "total": {"type": "number"},
+                                                },
+                                                "required": ["customer", "total"],
+                                            },
+                                        },
+                                    },
+                                },
+                                "response_schema": {
+                                    "$ref": "#/components/schemas/PrivateInvoice",
+                                    "components": {
+                                        "schemas": {
+                                            "PrivateInvoice": {
+                                                "type": "object",
+                                                "properties": {
+                                                    "invoice_id": {"type": "integer"},
+                                                },
+                                            },
+                                        },
+                                    },
+                                },
+                            },
+                        },
+                    }
+                return super().discover(guide=guide, operation=operation)
+
+        router = PydanticMCARouter()
+        client = SchemaClient()
+        router.mount("billing", client)
+
+        @router.register(
+            "/invoices",
+            delegate_to="billing.make_invoice",
+        )
+        def make_invoice(data: dict[str, Any]) -> dict[str, Any]:
+            return client.call("make_invoice", data=data)
+
+        @router.register(
+            "/typed-invoices",
+            delegate_to="billing.make_invoice",
+        )
+        def make_typed_invoice(data: ItemOut) -> ItemOut:
+            return ItemOut(**client.call("make_invoice", data=data.model_dump()))
+
+        details = router.dispatch(
+            "get_mca",
+            params={"operation": "make_invoice"},
+        )
+        schema = details.operations["make_invoice"].model_dump()
+
+        self.assertEqual(
+            schema["request_schema"]["properties"]["body"]["type"],
+            "object",
+        )
+        self.assertEqual(
+            schema["response_schema"]["type"],
+            "object",
+        )
+        self.assertIn("customer", schema["request_schema"]["properties"]["body"]["properties"])
+        self.assertIn("invoice_id", schema["response_schema"]["properties"])
+        self.assertNotIn("components", schema["request_schema"])
+        self.assertNotIn("components", schema["response_schema"])
+        self.assertEqual(client.discovery_calls.count((None, "make_invoice")), 1)
+
+        typed_details = router.dispatch(
+            "get_mca",
+            params={"operation": "make_typed_invoice"},
+        )
+        typed_schema = typed_details.operations["make_typed_invoice"].model_dump()
+        self.assertEqual(
+            typed_schema["request_schema"]["properties"]["body"]["type"],
+            "object",
+        )
+        self.assertEqual(
+            typed_schema["response_schema"]["type"],
+            "object",
+        )
+        self.assertIn("item_id", typed_schema["response_schema"]["properties"])
 
     def test_explicit_composition_merges_mixed_guides_and_public_operation_schemas(self):
         client = FakeMCAClient()

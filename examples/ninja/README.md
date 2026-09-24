@@ -8,6 +8,12 @@ This example runs a small Django server with two MCA routers:
 - `MockJsonRpcClient` is the only code that calls the private router, standing
   in for a JSON-RPC client between two microservices.
 
+The public handlers use generic JSON-compatible types and do not import the
+private service's Pydantic models. During discovery, the public router fetches
+and caches the private request and response schemas, then uses them for generic
+public body and response schemas while retaining the public HTTP route and
+path/query parameters.
+
 From the repository root, install the Ninja extra if needed and run Django's
 system check:
 

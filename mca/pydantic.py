@@ -223,12 +223,15 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
             if response_components:
                 response_schema["components"] = {"schemas": response_components}
 
-        return APIRouteSchemaOut(
+        local_schema = APIRouteSchemaOut(
             route=route.discovery_route,
             description=route.description,
             guides=self._route_guides(route),
             request_schema=request_schema,
             response_schema=response_schema,
+        )
+        return APIRouteSchemaOut.model_validate(
+            self._compose_route_schema(route, local_schema.model_dump())
         )
 
     def _get_mca(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
