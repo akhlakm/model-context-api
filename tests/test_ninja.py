@@ -70,6 +70,23 @@ class FakeAPI:
 
 
 class NinjaMCARouterPackageTests(TestCase):
+    def test_routes_are_required_for_ninja_registration(self):
+        api = FakeAPI()
+        router = NinjaMCARouter(api)
+
+        with self.assertRaises(TypeError):
+            router.register()
+
+        with self.assertRaisesRegex(ValueError, "route path must be specified"):
+            @router.register(None)
+            def get_missing_route():
+                return None
+
+        with self.assertRaisesRegex(ValueError, "route path must be specified"):
+            @router.register_all(None, methods=("GET",))
+            def missing_route_all():
+                return None
+
     def test_register_all_generates_selected_operation_ids(self):
         api = FakeAPI()
         router = NinjaMCARouter(api, guides_dir=Path(__file__).resolve().parents[1])

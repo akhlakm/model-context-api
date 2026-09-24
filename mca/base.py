@@ -62,7 +62,7 @@ class GuideCatalog:
 @dataclass(frozen=True, slots=True)
 class RegisteredRoute:
     method: str
-    path: str
+    path: str | None
     operation: str
     endpoint: Callable[..., Any]
     description: str = ""
@@ -70,10 +70,14 @@ class RegisteredRoute:
 
     @property
     def relative_route(self) -> str:
+        if self.path is None:
+            return self.operation
         return f"{self.method} {self.path}"
 
     @property
     def discovery_route(self) -> str:
+        if self.path is None:
+            return self.operation
         return f"{self.method} {self.path.lstrip('/') or '.'}"
 
     def meta(self, name: str, default: Any = None) -> Any:
@@ -123,7 +127,7 @@ class BaseMCARouter:
 
     def _route(
         self,
-        path: str,
+        path: str | None,
         method: str,
         operation: str,
         endpoint: F,
@@ -145,12 +149,20 @@ class BaseMCARouter:
         self._routes[operation] = replace(route, endpoint=registered_endpoint)
         return registered_endpoint
 
-    def _register_endpoint(self, path: str, operation: str, endpoint: F, options: Mapping[str, Any]) -> F:
+    def _register_endpoint(self, path: str | None, operation: str, endpoint: F, options: Mapping[str, Any]) -> F:
+        self._validate_route_path(path)
         method = self._method_for_endpoint(endpoint)
         self._validate_route_registration(path, method, operation)
         return self._route(path, method, operation, endpoint, options)
 
+    @staticmethod
+    def _validate_route_path(path: str | None) -> None:
+        if path is None:
+            raise ValueError("MCA route path must be specified.")
+
     def _register_route_variant(self, route: RegisteredRoute, endpoint: F, options: Mapping[str, Any]) -> None:
+        if route.path is None:
+            return
         canonical_path = route.path.rstrip("/") or "/"
         if canonical_path == "/":
             return
@@ -193,6 +205,7 @@ class BaseMCARouter:
         **options: Any,
     ) -> Callable[[F], F]:
         def decorator(endpoint: F) -> F:
+            self._validate_route_path(path)
             base_operation = operation_id or endpoint.__name__
             selected_methods = tuple(
                 method.upper()
@@ -221,10 +234,10 @@ class BaseMCARouter:
 
         return decorator
 
-    def _validate_route_registration(self, path: str, method: str, operation: str) -> None:
+    def _validate_route_registration(self, path: str | None, method: str, operation: str) -> None:
         if operation in self._routes:
             raise ValueError(f"MCA operation {operation!r} is already registered.")
-        if any(route.method == method and route.path == path for route in self._routes.values()):
+        if path is not None and any(route.method == method and route.path == path for route in self._routes.values()):
             raise ValueError(f"MCA route {method} {path!r} is already registered.")
 
     def routes(self) -> tuple[RegisteredRoute, ...]: return tuple(self._routes.values())
@@ -247,7 +260,10 @@ class BaseMCARouter:
         """Resolve an HTTP method and route path to an operation."""
         parts = lambda value: (value.rstrip("/") or "/").strip("/").split("/") if value.strip("/") else []
         path_parts = parts(route_path)
-        routes = sorted(self._routes.values(), key=lambda route: route.path.count("{"))
+        routes = sorted(
+            (route for route in self._routes.values() if route.path is not None),
+            key=lambda route: route.path.count("{"),
+        )
 
         for route in routes:
             if route.method != method.upper():

@@ -44,6 +44,34 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertNotIn("operation", details.operations["get_item"].model_dump())
         self.assertEqual(result.item_id, 7)
 
+    def test_operations_can_be_registered_by_name_without_a_route(self):
+        router = PydanticMCARouter()
+
+        @router.register()
+        def get_status() -> ItemOut:
+            return ItemOut(item_id=1)
+
+        route = router.route("get_status")
+        details = router.dispatch("get_mca", params={"operation": "get_status"})
+
+        self.assertIsNone(route.path)
+        self.assertEqual(route.discovery_route, "get_status")
+        self.assertEqual(details.operations["get_status"].route, "get_status")
+        self.assertEqual(router.dispatch("get_status").item_id, 1)
+        self.assertIsNone(router.resolve("GET", "/status"))
+
+    def test_register_all_can_create_name_only_operations(self):
+        router = PydanticMCARouter()
+
+        @router.register_all(methods=("GET", "POST"))
+        def item() -> ItemOut:
+            return ItemOut(item_id=1)
+
+        self.assertEqual(
+            [(route.method, route.operation, route.path) for route in router.routes()[1:]],
+            [("GET", "get_item", None), ("POST", "make_item", None)],
+        )
+
     def test_discovery_metadata_can_be_configured(self):
         router = PydanticMCARouter(
             guides_dir=self.guides_dir.name,

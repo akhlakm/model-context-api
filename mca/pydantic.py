@@ -11,13 +11,9 @@ from typing import Any, Callable, TypeVar, get_type_hints
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from .base import BaseMCARouter, MCAError, RegisteredRoute
-from .models import (
-    APIRouteSchemaOut,
-    DiscoveryParams,
-    ErrorOut,
-    MCAResponseOut,
-    MCADiscoveryOut,
-)
+from .models import (APIRouteSchemaOut, DiscoveryParams, ErrorOut,
+                     MCADiscoveryOut, MCAResponseOut)
+
 F = TypeVar("F", bound=Callable[..., Any])
 
 
@@ -52,6 +48,34 @@ def _validation_error_response(exc: DispatchValidationError) -> ErrorOut:
 
 
 class PydanticMCARouter(BaseMCARouter):
+    @staticmethod
+    def _validate_route_path(path: str | None) -> None:
+        """Pydantic operations may be registered without an HTTP route."""
+
+    def register(
+        self,
+        path: str | None = None,
+        *,
+        operation_id: str | None = None,
+        **options: Any,
+    ) -> Callable[[F], F]:
+        return super().register(path, operation_id=operation_id, **options)
+
+    def register_all(
+        self,
+        path: str | None = None,
+        *,
+        operation_id: str | None = None,
+        methods: Iterable[str] | None = None,
+        **options: Any,
+    ) -> Callable[[F], F]:
+        return super().register_all(
+            path,
+            operation_id=operation_id,
+            methods=methods,
+            **options,
+        )
+
     def _discovery_endpoints(self) -> Iterable[tuple[str, str, F, Mapping[str, Any]]]:
         def get_mca(params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
             return self._get_mca(params)
@@ -114,7 +138,9 @@ class PydanticMCARouter(BaseMCARouter):
         return schema, components
 
     @staticmethod
-    def _path_parameter_names(route: str) -> set[str]:
+    def _path_parameter_names(route: str | None) -> set[str]:
+        if route is None:
+            return set()
         return {
             parameter.split(":")[-1]
             for parameter in re.findall(r"\{([^}]+)\}", route)

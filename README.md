@@ -278,8 +278,9 @@ operation.
 Use PydanticMCARouter when the engine should be callable without Django or
 another web framework.
 
-The example below publishes two capabilities: reading an item and creating an
-item. The decorator supplies the route and optional description. If no
+The example below publishes three capabilities: reading an item, creating an
+item, and reading API status. The decorator supplies an optional route and
+description. If no
 description is supplied, MCA uses the operation function's docstring. The
 function name supplies the HTTP method and operation name. The Pydantic
 annotations tell MCA which values are inputs and what a successful response
@@ -334,12 +335,19 @@ def get_item(params: ItemParams) -> ItemOut:
 @router.register("/items", description="Create an item.")
 def make_item(data: ItemCreate) -> ItemOut:
     return ItemOut(item_id=1, name=data.name, description=data.description)
+
+
+@router.register(description="Read the current API status.")
+def get_status() -> ItemOut:
+    return ItemOut(item_id=1, name="status", description="Ready")
 ~~~
 
 There is no web server in this example. The registry is an in-process
 dispatcher: a caller supplies an operation or route, MCA validates the input,
-calls the Python function, and validates the result. A web or MCP adapter can
-expose the same logical operations later.
+calls the Python function, and validates the result. A Pydantic endpoint may
+omit its route and then be called only by operation name. A web or MCP adapter
+can expose path-based operations later; Django Ninja registrations always
+require an explicit route.
 
 The parameter conventions are:
 
