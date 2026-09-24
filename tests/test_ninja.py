@@ -1,5 +1,6 @@
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from django.conf import settings
 from django.test import RequestFactory
@@ -219,6 +220,16 @@ class NinjaMCARouterPackageTests(TestCase):
         self.assertNotIn("guides", guided)
         documented_call = next(call for call in api.calls if call[2].get("operation_id") == "get_documented")
         self.assertEqual(documented_call[2]["description"], "Read documented data.")
+
+    def test_discovery_omits_missing_index(self):
+        with TemporaryDirectory() as directory:
+            Path(directory, "workflow.md").write_text("# Workflow", encoding="utf-8")
+            router = NinjaMCARouter(FakeAPI(), guides_dir=directory)
+
+            discovery = router._get_mca(None, None)
+
+            self.assertNotIn("index", discovery)
+            self.assertEqual(discovery["available_guides"], ["workflow.md"])
 
     def test_route_schema_reads_openapi_document_once(self):
         api = FakeAPI()

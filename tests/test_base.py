@@ -102,6 +102,17 @@ class BaseMCARouterTests(TestCase):
             self.assertEqual(context.exception.code, "unknown_guides")
             self.assertEqual(context.exception.status, 404)
 
+    def test_root_discovery_does_not_require_index_guide(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "workflow.md").write_text("# Workflow", encoding="utf-8")
+            router = FakeMCARouter(root)
+
+            discovery = router.discovery(None, None, lambda route: route.relative_route)
+
+            self.assertNotIn("index", discovery)
+            self.assertEqual(discovery["available_guides"], ["workflow.md"])
+
     def test_guides_can_be_disabled_and_help_can_be_overridden(self):
         router = FakeMCARouter(None, help="Use operation discovery.")
 

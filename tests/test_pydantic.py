@@ -146,6 +146,17 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertEqual(context.exception.code, "unknown_guides")
         self.assertEqual(context.exception.status, 404)
 
+    def test_discovery_omits_missing_index(self):
+        with TemporaryDirectory() as directory:
+            Path(directory, "workflow.md").write_text("# Workflow", encoding="utf-8")
+            router = PydanticMCARouter(guides_dir=directory)
+
+            discovery = router.dispatch("get_mca")
+            payload = discovery.model_dump()
+
+            self.assertNotIn("index", payload)
+            self.assertEqual(payload["available_guides"], ["workflow.md"])
+
     def test_operation_schema_can_list_relevant_guides(self):
         @self.router.register("/guided", guides=["workflow.md"])
         def get_guided() -> ItemOut:

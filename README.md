@@ -186,13 +186,14 @@ pass `guides_dir=None` (the default) for an API without guides. When guides are
 disabled, guide-related fields are omitted from discovery responses and guide
 requests return an `unknown_guides` error.
 
-When guides are enabled, the guide directory should contain index.md:
+When guides are enabled, an optional `index.md` file provides the root guide
+description. It is omitted from root discovery when not present:
 
 ~~~text
 myapp/
 ├── api.py
 └── guides/
-    ├── index.md
+    ├── index.md                 (optional)
     ├── items.md
     ├── invoices/
     │   └── legacy_format.md
@@ -203,9 +204,10 @@ Guide names are paths relative to `guides_dir`, using `/` separators. Nested
 guides can be requested with names such as `invoices/legacy_format.md`.
 
 With guides enabled, the root discovery response returns the registry metadata,
-index content, available guide names, and a map of available operations. Guide
-and operation details are requested separately. Without guides, the response
-contains the registry metadata, help text, and available operations only:
+available guide names, and a map of available operations. It also returns the
+optional index content when `index.md` exists. Guide and operation details are
+requested separately. Without guides, the response contains the registry
+metadata, help text, and available operations only:
 
 ~~~http
 GET /                         Root discovery
