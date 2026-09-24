@@ -1,0 +1,48 @@
+# Ninja composition example
+
+This example runs a small Django server with two MCA routers:
+
+- the public router is a Django Ninja `Router` wrapped by `NinjaMCARouter`;
+- the private billing service is a `PydanticMCARouter` that is never added to
+  Django URL configuration;
+- `MockJsonRpcClient` is the only code that calls the private router, standing
+  in for a JSON-RPC client between two microservices.
+
+From the repository root, install the Ninja extra if needed and run Django's
+system check:
+
+```bash
+pip install -e ".[ninja]"
+PYTHONPATH=. python examples/ninja/manage.py check
+```
+
+Start the server:
+
+```bash
+PYTHONPATH=. python examples/ninja/manage.py runserver
+```
+
+Inspect public discovery:
+
+```bash
+curl http://127.0.0.1:8000/api/
+curl 'http://127.0.0.1:8000/api/?operation=get_public_invoice'
+curl 'http://127.0.0.1:8000/api/?guide=billing/invoices.md'
+```
+
+Call the public operation with the demo token:
+
+```bash
+curl -H 'X-Demo-Token: demo-token' \
+  http://127.0.0.1:8000/api/invoices/7
+```
+
+The public handler performs authentication, checks the invoice ACL, records an
+access log entry, and then calls `billing_rpc`. The RPC client invokes the
+private Pydantic router and serializes its response as JSON. The limited demo
+token authenticates successfully but is denied by the ACL:
+
+```bash
+curl -i -H 'X-Demo-Token: limited-token' \
+  http://127.0.0.1:8000/api/invoices/7
+```

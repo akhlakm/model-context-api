@@ -1,0 +1,57 @@
+"""In-process JSON-RPC stand-in for the private billing service."""
+
+from typing import Any
+
+from pydantic import BaseModel
+
+from .private import private_router
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, BaseModel):
+        return value.model_dump(mode="json")
+    return value
+
+
+class MockJsonRpcClient:
+    """Call the private router as if it were behind a JSON-RPC transport."""
+
+    def __init__(self, router: Any):
+        self.router = router
+        self.calls: list[dict[str, Any]] = []
+
+    def discover(
+        self,
+        *,
+        guide: str | None = None,
+        operation: str | None = None,
+    ) -> Any:
+        self.calls.append({"method": "get_mca", "guide": guide, "operation": operation})
+        return _json_value(
+            self.router.dispatch(
+                "get_mca",
+                params={"guide": guide, "operation": operation},
+            )
+        )
+
+    def call(
+        self,
+        operation: str,
+        *,
+        params: dict[str, Any] | None = None,
+        data: Any = None,
+    ) -> Any:
+        self.calls.append(
+            {"method": operation, "params": params, "data": data}
+        )
+        return _json_value(
+            self.router.dispatch(
+                operation,
+                params=params,
+                data=data,
+            )
+        )
+
+
+# This is the only object in the example that talks to the private router.
+billing_rpc = MockJsonRpcClient(private_router)
