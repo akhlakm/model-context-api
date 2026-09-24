@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from mca.pydantic import PydanticMCARouter
 
@@ -10,30 +10,49 @@ EXAMPLE_ROOT = Path(__file__).resolve().parent.parent
 
 
 class InvoiceParams(BaseModel):
-    invoice_id: int
+    """Path parameters used to identify an invoice."""
+
+    invoice_id: int = Field(..., description="Unique identifier of the invoice.")
 
 
 class InvoiceCreate(BaseModel):
-    customer: str
-    total: float
+    """Fields required to create a new invoice."""
+
+    customer: str = Field(..., description="Name of the customer billed by the invoice.")
+    total: float = Field(..., description="Total amount of the invoice in the example currency.")
 
 
 class InvoiceUpdate(BaseModel):
-    customer: str | None = None
-    total: float | None = None
-    status: str | None = None
+    """Optional fields that can be changed on an existing invoice."""
+
+    customer: str | None = Field(
+        None,
+        description="Replacement customer name, when changing the billed customer.",
+    )
+    total: float | None = Field(
+        None,
+        description="Replacement total amount, when changing the invoice amount.",
+    )
+    status: str | None = Field(
+        None,
+        description="Replacement invoice status, when changing its state.",
+    )
 
 
 class InvoiceOut(BaseModel):
-    invoice_id: int
-    customer: str
-    total: float
-    status: str
+    """Invoice returned by the billing service."""
+
+    invoice_id: int = Field(..., description="Unique identifier of the invoice.")
+    customer: str = Field(..., description="Name of the customer billed by the invoice.")
+    total: float = Field(..., description="Total amount of the invoice in the example currency.")
+    status: str = Field(..., description="Current lifecycle status of the invoice.")
 
 
 class InvoiceDeletedOut(BaseModel):
-    invoice_id: int
-    status: str
+    """Result returned after an invoice is deleted."""
+
+    invoice_id: int = Field(..., description="Unique identifier of the deleted invoice.")
+    status: str = Field(..., description="Final status assigned after deletion.")
 
 
 private_router = PydanticMCARouter(

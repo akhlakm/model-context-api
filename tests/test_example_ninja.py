@@ -99,12 +99,40 @@ class NinjaCompositionExampleTests(TestCase):
             ["customer", "total"],
         )
         self.assertEqual(
+            create_schema["request_schema"]["properties"]["body"]["description"],
+            "Fields required to create a new invoice.",
+        )
+        self.assertEqual(
+            create_schema["request_schema"]["properties"]["body"]["properties"]["customer"][
+                "description"
+            ],
+            "Name of the customer billed by the invoice.",
+        )
+        self.assertEqual(
+            create_schema["request_schema"]["properties"]["body"]["properties"]["total"][
+                "description"
+            ],
+            "Total amount of the invoice in the example currency.",
+        )
+        self.assertEqual(
             create_schema["response_schema"]["type"],
             "object",
+        )
+        self.assertEqual(
+            create_schema["response_schema"]["description"],
+            "Invoice returned by the billing service.",
         )
         self.assertIn(
             "invoice_id",
             create_schema["response_schema"]["properties"],
+        )
+        self.assertEqual(
+            create_schema["response_schema"]["properties"]["invoice_id"]["description"],
+            "Unique identifier of the invoice.",
+        )
+        self.assertEqual(
+            create_schema["response_schema"]["properties"]["status"]["description"],
+            "Current lifecycle status of the invoice.",
         )
         self.assertNotIn("components", create_schema["request_schema"])
         self.assertNotIn("components", create_schema["response_schema"])
@@ -112,8 +140,20 @@ class NinjaCompositionExampleTests(TestCase):
         update_schema = repeated["operations"]["update_public_invoice"]
         self.assertIn("path_params", update_schema["request_schema"]["properties"])
         self.assertEqual(
+            update_schema["request_schema"]["properties"]["path_params"]["properties"][
+                "invoice_id"
+            ]["description"],
+            "Unique identifier of the invoice.",
+        )
+        self.assertEqual(
             update_schema["request_schema"]["properties"]["body"]["type"],
             "object",
+        )
+        self.assertEqual(
+            update_schema["request_schema"]["properties"]["body"]["properties"]["status"][
+                "description"
+            ],
+            "Replacement invoice status, when changing its state.",
         )
         self.assertNotIn("delegate_to", create_schema)
         self.assertEqual(

@@ -5,7 +5,9 @@ from pathlib import Path
 from typing import Any
 
 from django.http import HttpRequest
-from ninja import Body, Router
+from ninja import Body
+from ninja import Path as NinjaPath
+from ninja import Router
 from ninja.errors import HttpError
 
 from mca.ninja import NinjaMCARouter
@@ -62,7 +64,10 @@ def require_access(
     guides=["api.md"],
     delegate_to="billing.get_invoice",
 )
-def get_public_invoice(request: HttpRequest, invoice_id: int) -> dict[str, Any]:
+def get_public_invoice(
+    request: HttpRequest,
+    invoice_id: int = NinjaPath(..., description="Unique identifier of the invoice."),
+) -> dict[str, Any]:
     """Authenticate, authorize, track, and then delegate invoice access."""
     require_access(request, "billing:read", invoice_id)
 
@@ -106,7 +111,7 @@ def make_public_invoice(
 )
 def update_public_invoice(
     request: HttpRequest,
-    invoice_id: int,
+    invoice_id: int = NinjaPath(..., description="Unique identifier of the invoice."),
     payload: dict[str, Any] = Body(...),
 ) -> dict[str, Any]:
     """Authorize and delegate invoice updates."""
@@ -132,7 +137,10 @@ def update_public_invoice(
     guides=["api.md"],
     delegate_to="billing.remove_invoice",
 )
-def remove_public_invoice(request: HttpRequest, invoice_id: int) -> dict[str, Any]:
+def remove_public_invoice(
+    request: HttpRequest,
+    invoice_id: int = NinjaPath(..., description="Unique identifier of the invoice."),
+) -> dict[str, Any]:
     """Authorize and delegate invoice deletion."""
     require_access(request, "billing:delete", invoice_id)
     LOGGER.info(

@@ -9,6 +9,26 @@ from typing import Any, Callable
 _COMPONENT_REF_PREFIX = "#/components/schemas/"
 
 
+def _schema_description(
+    schema: Mapping[str, Any],
+    components: Mapping[str, Any] | None,
+) -> str | None:
+    """Return an inline or referenced model description when available."""
+    description = schema.get("description")
+    if isinstance(description, str):
+        return description
+
+    reference = schema.get("$ref")
+    if not isinstance(reference, str) or not reference.startswith(_COMPONENT_REF_PREFIX):
+        return None
+    name = reference.removeprefix(_COMPONENT_REF_PREFIX)
+    component = (components or {}).get(name)
+    if not isinstance(component, Mapping):
+        return None
+    component_description = component.get("description")
+    return component_description if isinstance(component_description, str) else None
+
+
 def is_generic_schema(schema: Any) -> bool:
     """Return whether a local schema carries no useful structural contract."""
     if not isinstance(schema, Mapping) or not schema:
@@ -56,10 +76,12 @@ def build_request_schema(
             required.append(name)
 
     if body_schema is not None:
-        properties["body"] = {
-            "description": "JSON request body.",
-            **deepcopy(dict(body_schema)),
-        }
+        body_property = deepcopy(dict(body_schema))
+        body_property.setdefault(
+            "description",
+            _schema_description(body_property, components) or "JSON request body.",
+        )
+        properties["body"] = body_property
         if body_required:
             required.append("body")
 
