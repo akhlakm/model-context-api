@@ -109,9 +109,8 @@ class MCACompositionMixin:
         ``namespace`` becomes the first segment of every ``delegate_to``
         target. Mounting alone does not expose or merge any private operation.
 
-        The client must provide callable ``discover`` and ``call`` methods.
-        Async clients may additionally provide ``adiscover`` and ``acall``
-        for use by asynchronous public handlers.
+        The client must provide either the synchronous pair ``discover`` and
+        ``call``, the asynchronous pair ``adiscover`` and ``acall``, or both.
         """
         if not isinstance(namespace, str) or self._namespace_pattern.fullmatch(namespace) is None:
             raise ValueError(
@@ -124,8 +123,22 @@ class MCACompositionMixin:
             for route in self._routes.values()
         ):
             raise ValueError(f"MCA namespace {namespace!r} conflicts with a public operation.")
-        if not callable(getattr(client, "discover", None)) or not callable(getattr(client, "call", None)):
-            raise TypeError("MCA client must provide discover() and call() methods.")
+        sync_methods = (
+            callable(getattr(client, "discover", None)),
+            callable(getattr(client, "call", None)),
+        )
+        async_methods = (
+            callable(getattr(client, "adiscover", None)),
+            callable(getattr(client, "acall", None)),
+        )
+        if any(sync_methods) and not all(sync_methods):
+            raise TypeError("MCA client must provide both discover() and call() methods.")
+        if any(async_methods) and not all(async_methods):
+            raise TypeError("MCA client must provide both adiscover() and acall() methods.")
+        if not all(sync_methods) and not all(async_methods):
+            raise TypeError(
+                "MCA client must provide discover()/call() or adiscover()/acall() methods."
+            )
         self._mounted_mcas[namespace] = client
 
     def clear_remote_schema_cache(
@@ -215,10 +228,18 @@ class MCACompositionMixin:
     ) -> dict[str, Any]:
         """Fetch and validate one mounted service's discovery response."""
         client = self._mounted_mcas[namespace]
+        discover = getattr(client, "discover", None)
+        if not callable(discover):
+            raise MCAError(
+                "sync_client_required",
+                f"Mounted MCA service '{namespace}' does not provide discover().",
+                "service",
+                500,
+            )
         try:
             return self._validate_remote_discovery(
                 namespace,
-                client.discover(guide=guide, operation=operation),
+                discover(guide=guide, operation=operation),
                 guide=guide,
                 operation=operation,
             )

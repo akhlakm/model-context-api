@@ -6,7 +6,7 @@ This example runs a small Django server with two MCA routers:
 - the private billing service is a `PydanticMCARouter` that is never added to
   Django URL configuration;
 - `MockJsonRpcClient` is the only code that calls the private router, standing
-  in for a JSON-RPC client between two microservices.
+  in for an async JSON-RPC client between two microservices.
 
 The public handlers use generic JSON-compatible types and do not import the
 private service's Pydantic models. During discovery, the public router fetches

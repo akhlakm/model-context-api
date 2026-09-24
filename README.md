@@ -432,15 +432,16 @@ when methods have different request or response models.
 The same explicit composition pattern applies to both adapters. A public
 router can mount private MCA services through a small client adapter. The
 client can use JSON-RPC, HTTP, or another transport; it only needs to provide
-`discover()` and `call()` methods. Clients used by asynchronous handlers can
-also provide `adiscover()` and `acall()` as explicit async counterparts.
+either the synchronous pair `discover()`/`call()`, the asynchronous pair
+`adiscover()`/`acall()`, or both.
 
 When discovery needs schemas for multiple delegated operations, the public
 router batches the missing operation names into one `get_mca` request per
 mounted service and caches each returned schema. Guide content is requested
 separately only when that guide is explicitly requested. Synchronous discovery
 uses `discover()`; async discovery uses `await adiscover()` and requires the
-mounted client to provide that method.
+mounted client to provide the async pair. An async-only client can be mounted
+when the public application uses the async discovery and operation paths.
 
 #### PydanticMCARouter
 

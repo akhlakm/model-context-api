@@ -523,6 +523,13 @@ class PydanticMCARouterPackageTests(TestCase):
             def get_unmounted_target():
                 return None
 
+        class PartialClient:
+            def discover(self, **kwargs):
+                return {}
+
+        with self.assertRaisesRegex(TypeError, r"both discover\(\) and call\(\)"):
+            self.router.mount("partial", PartialClient())
+
         failing_router = PydanticMCARouter()
 
         class FailingClient(FakeMCAClient):
@@ -543,6 +550,40 @@ class PydanticMCARouterPackageTests(TestCase):
 
 
 class AsyncPydanticMCARouterTests(IsolatedAsyncioTestCase):
+    async def test_sync_discovery_rejects_async_only_client(self):
+        class AsyncOnlyClient:
+            async def adiscover(self, *, guide=None, operation=None):
+                return {
+                    "operations": {
+                        "get_invoice": {
+                            "route": "GET private/invoices/{invoice_id}",
+                            "description": "Read an invoice.",
+                            "guides": [],
+                            "request_schema": None,
+                            "response_schema": {"type": "object"},
+                        }
+                    }
+                }
+
+            async def acall(self, operation, *, params=None, data=None):
+                return {}
+
+        router = PydanticMCARouter()
+        router.mount("billing", AsyncOnlyClient())
+
+        @router.register(
+            "/invoices/{invoice_id}",
+            delegate_to="billing.get_invoice",
+        )
+        def get_public_invoice() -> dict[str, Any]:
+            return {}
+
+        with self.assertRaises(MCAError) as context:
+            router.dispatch("get_mca", params={"operation": "get_public_invoice"})
+
+        self.assertEqual(context.exception.code, "sync_client_required")
+        self.assertEqual(context.exception.status, 500)
+
     async def test_async_discovery_uses_adiscover_and_composes_schema(self):
         class AsyncClient:
             def __init__(self):

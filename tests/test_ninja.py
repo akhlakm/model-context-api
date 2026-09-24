@@ -550,6 +550,43 @@ class NinjaMCARouterPackageTests(TestCase):
 
 
 class AsyncNinjaMCARouterTests(IsolatedAsyncioTestCase):
+    async def test_async_only_client_can_mount_and_discover(self):
+        class AsyncOnlyClient:
+            async def adiscover(self, *, guide=None, operation=None):
+                return {
+                    "operations": {
+                        "get_invoice": {
+                            "route": "GET private/invoices/{invoice_id}",
+                            "description": "Read an invoice.",
+                            "guides": [],
+                            "request_schema": None,
+                            "response_schema": {"type": "object"},
+                        }
+                    }
+                }
+
+            async def acall(self, operation, *, params=None, data=None):
+                return {"invoice_id": params["invoice_id"]}
+
+        registry = NinjaMCARouter(Router())
+        registry.mount("billing", AsyncOnlyClient())
+
+        @registry.register(
+            "/invoices/{invoice_id}",
+            response=dict,
+            delegate_to="billing.get_invoice",
+        )
+        def get_invoice(request, invoice_id: int):
+            return {"invoice_id": invoice_id}
+
+        response = await registry.execute_http_async(
+            "get_mca",
+            RequestFactory().get("/"),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("get_invoice", json.loads(response.content)["available_operations"])
+
     async def test_async_discovery_awaits_mounted_client(self):
         class AsyncClient:
             def __init__(self):
