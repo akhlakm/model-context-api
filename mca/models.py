@@ -16,9 +16,17 @@ class ErrorOut(BaseModel):
 class MCAResponseOut(BaseModel):
     title: str = Field(..., description="Title of the Model Context API discovery document.")
     version: float = Field(..., description="Version of the discovery document format.")
-    index: str = Field(..., description="Markdown index describing the available API guides.")
+    index: str | None = Field(
+        None,
+        exclude_if=lambda value: value is None,
+        description="Markdown index describing the available API guides.",
+    )
     help: str = Field(..., description="Instructions for requesting guide and schema details.")
-    available_guides: list[str] = Field(..., description="Available packaged Markdown guide names.")
+    available_guides: list[str] | None = Field(
+        None,
+        exclude_if=lambda value: value is None,
+        description="Available packaged Markdown guide names.",
+    )
     available_operations: dict[str, str] = Field(
         ...,
         description="Map from operation name to relative route and description.",

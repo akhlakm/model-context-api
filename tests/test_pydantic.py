@@ -56,6 +56,25 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertEqual(discovery.title, "Example API")
         self.assertEqual(discovery.version, 2.5)
 
+    def test_guides_can_be_disabled_and_help_can_be_overridden(self):
+        router = PydanticMCARouter(help="Use operation discovery.")
+
+        @router.register("/guided", guides=["workflow.md"])
+        def get_guided() -> ItemOut:
+            """Read guided data."""
+            return ItemOut(item_id=1)
+
+        discovery = router.dispatch("get_mca")
+        details = router.dispatch("get_mca", params={"operation": "get_guided"})
+        guide_error = router.dispatch("get_mca", params={"guide": "workflow.md"})
+
+        self.assertEqual(discovery.help, "Use operation discovery.")
+        self.assertNotIn("index", discovery.model_dump())
+        self.assertNotIn("available_guides", discovery.model_dump())
+        self.assertNotIn("guides", details.operations["get_guided"].model_dump())
+        self.assertIsInstance(guide_error, ErrorOut)
+        self.assertEqual(guide_error.code, "unknown_guides")
+
     def test_operation_schema_can_list_relevant_guides(self):
         @self.router.register("/guided", guides=["workflow.md"])
         def get_guided() -> ItemOut:

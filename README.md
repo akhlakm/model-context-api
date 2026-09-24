@@ -181,7 +181,12 @@ guess operation names or request shapes. It should progressively ask for:
 3. the selected operation schema, which gives exact input and output shape;
 4. the operation route, which performs the requested work.
 
-Every registry's guide directory must contain index.md:
+Guides are optional. Pass `guides_dir` to enable guide discovery and reading;
+pass `guides_dir=None` (the default) for an API without guides. When guides are
+disabled, guide-related fields are omitted from discovery responses and guide
+requests return an `unknown_guides` error.
+
+When guides are enabled, the guide directory should contain index.md:
 
 ~~~text
 myapp/
@@ -192,9 +197,10 @@ myapp/
     └── workflows.md
 ~~~
 
-The root discovery response returns the registry metadata, index content,
-available guide names, and a map of available operations. Guide and operation
-details are requested separately:
+With guides enabled, the root discovery response returns the registry metadata,
+index content, available guide names, and a map of available operations. Guide
+and operation details are requested separately. Without guides, the response
+contains the registry metadata, help text, and available operations only:
 
 ~~~http
 GET /                         Root discovery
@@ -273,9 +279,11 @@ Use PydanticMCARouter when the engine should be callable without Django or
 another web framework.
 
 The example below publishes two capabilities: reading an item and creating an
-item. The decorator supplies the route and description. The function name
-supplies the HTTP method and operation name. The Pydantic annotations tell MCA
-which values are inputs and what a successful response looks like.
+item. The decorator supplies the route and optional description. If no
+description is supplied, MCA uses the operation function's docstring. The
+function name supplies the HTTP method and operation name. The Pydantic
+annotations tell MCA which values are inputs and what a successful response
+looks like.
 
 ~~~python
 # myapp/engine.py
@@ -306,6 +314,7 @@ router = PydanticMCARouter(
     guides_dir=Path(__file__).with_name("guides"),
     title="Items API",
     version=1.0,
+    help="Use operation and guide discovery before calling an item route.",
 )
 
 

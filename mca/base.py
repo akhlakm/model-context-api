@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import unquote
 
-
 F = TypeVar("F", bound=Callable[..., Any])
 
 METHOD_PREFIXES = {
@@ -32,11 +31,19 @@ class MCAError(Exception):
 
 
 class GuideCatalog:
-    def __init__(self, guides_dir: str | Path):
-        self.root = Path(guides_dir)
+    def __init__(self, guides_dir: str | Path | None = None):
+        self.root = Path(guides_dir) if guides_dir is not None else None
+
+    @property
+    def enabled(self) -> bool:
+        return self.root is not None
 
     def available(self) -> list[str]:
-        return sorted(path.name for path in self.root.glob("*.md") if path.is_file()) if self.root.is_dir() else []
+        return (
+            sorted(path.name for path in self.root.glob("*.md") if path.is_file())
+            if self.root is not None and self.root.is_dir()
+            else []
+        )
 
     def read(self, names: str) -> dict[str, str]:
         requested, available = [item.strip() for item in names.split(",")], set(self.available())
@@ -48,6 +55,7 @@ class GuideCatalog:
                 "guide",
                 404,
             )
+        assert self.root is not None
         return {name: self.root.joinpath(name).read_text(encoding="utf-8") for name in requested}
 
 
@@ -76,15 +84,17 @@ class BaseMCARouter:
     def __init__(
         self,
         *,
-        guides_dir: str | Path,
+        guides_dir: str | Path | None = None,
         mca_path: str = "/",
         title: str = "Model Context API",
         version: float = 1.0,
+        help: str | None = None,
     ):
         self.guide_catalog = GuideCatalog(guides_dir)
         self.mca_path = mca_path
         self.title = title
         self.version = version
+        self.help = help
         self._routes: dict[str, RegisteredRoute] = {}
         for path, operation_id, endpoint, options in self._discovery_endpoints():
             self._register_endpoint(path, operation_id, endpoint, options)
@@ -120,14 +130,16 @@ class BaseMCARouter:
         options: Mapping[str, Any],
     ) -> F:
         metadata = dict(self._route_metadata(endpoint, options))
-        if options.get("guides") is not None:
+        if self.guide_catalog.enabled and options.get("guides") is not None:
             metadata["guides"] = options["guides"]
         if options.get("include_in_discovery") is False:
             metadata["include_in_discovery"] = False
-        route = RegisteredRoute(method, path, operation, endpoint,
-            options.get("description") or inspect.getdoc(endpoint) or operation.replace("_", " ").capitalize(),
-            metadata)
+        docstring = inspect.getdoc(endpoint)
+        description = options.get("description") or docstring or operation.replace("_", " ").capitalize()
+        route = RegisteredRoute(method, path, operation, endpoint, description, metadata)
         transport_options = self._transport_options(options)
+        if options.get("description") or docstring:
+            transport_options["description"] = description
         registered_endpoint = self._register_transport_route(route, endpoint, transport_options)
         self._register_route_variant(route, registered_endpoint, transport_options)
         self._routes[operation] = replace(route, endpoint=registered_endpoint)
@@ -302,16 +314,10 @@ class BaseMCARouter:
         schema_factory: Callable[[RegisteredRoute], Any],
     ) -> dict[str, Any]:
         if guide is None and operation_name is None:
-            index = self.guide_catalog.read("index.md")["index.md"]
-            return {
+            result = {
                 "title": self.title,
                 "version": self.version,
-                "index": index,
-                "help": (
-                    "Use GET /?guide={names} and/or GET /?operation={names} with "
-                    "comma-separated names to read available guides and operation schemas."
-                ),
-                "available_guides": self.guide_catalog.available(),
+                "help": self.help if self.help is not None else self._default_help(),
                 "available_operations": dict(
                     sorted(
                         (
@@ -324,6 +330,10 @@ class BaseMCARouter:
                     )
                 ),
             }
+            if self.guide_catalog.enabled:
+                result["index"] = self.guide_catalog.read("index.md")["index.md"]
+                result["available_guides"] = self.guide_catalog.available()
+            return result
 
         result: dict[str, Any] = {}
         if guide is not None:
@@ -344,3 +354,11 @@ class BaseMCARouter:
                 for name in names
             }
         return result
+
+    def _default_help(self) -> str:
+        if self.guide_catalog.enabled:
+            return (
+                "Use GET /?guide={names} and/or GET /?operation={names} with "
+                "comma-separated names to read available guides and operation schemas."
+            )
+        return "Use GET /?operation={names} with comma-separated names to read operation schemas."

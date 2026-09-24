@@ -1,5 +1,6 @@
-from django.conf import settings
 from pathlib import Path
+
+from django.conf import settings
 
 if not settings.configured:
     settings.configure(
@@ -53,6 +54,12 @@ class FakeAPI:
                         "responses": {"200": {"description": "OK"}},
                     },
                 },
+                "/documented": {
+                    "get": {
+                        "operationId": "get_documented",
+                        "responses": {"200": {"description": "OK"}},
+                    },
+                },
             },
             "components": {"schemas": {}},
         }
@@ -98,3 +105,29 @@ class NinjaMCARouterPackageTests(TestCase):
         self.assertEqual(schema["route"], "GET guided")
         self.assertNotIn("operation", schema)
         self.assertEqual(schema["guides"], ["workflow.md"])
+
+    def test_guides_can_be_disabled_and_docstrings_describe_operations(self):
+        api = FakeAPI()
+        router = NinjaMCARouter(api, help="Use operation discovery.")
+
+        @router.register("/documented")
+        def get_documented():
+            """Read documented data."""
+            return []
+
+        @router.register("/guided", guides=["workflow.md"])
+        def get_guided():
+            """Read guided data."""
+            return []
+
+        discovery = router.discovery(None, None, lambda route: route.relative_route)
+        documented = router._route_schema(router.route("get_documented"))
+        guided = router._route_schema(router.route("get_guided"))
+
+        self.assertEqual(discovery["help"], "Use operation discovery.")
+        self.assertNotIn("index", discovery)
+        self.assertNotIn("available_guides", discovery)
+        self.assertEqual(documented["description"], "Read documented data.")
+        self.assertNotIn("guides", guided)
+        documented_call = next(call for call in api.calls if call[2].get("operation_id") == "get_documented")
+        self.assertEqual(documented_call[2]["description"], "Read documented data.")

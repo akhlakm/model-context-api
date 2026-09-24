@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import inspect
+import json
+import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
-import json
-import inspect
-import re
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 from urllib.parse import quote, urlencode
@@ -16,7 +16,7 @@ from django.http.response import HttpResponseBase
 from ninja import Query
 
 from .base import BaseMCARouter, MCAError, RegisteredRoute
-from .models import APIRouteSchemaOut, MCAResponseOut, MCADiscoveryOut
+from .models import MCADiscoveryOut, MCAResponseOut
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -46,15 +46,22 @@ class NinjaMCARouter(BaseMCARouter):
         self,
         api: Any,
         *,
-        guides_dir: str | Path,
+        guides_dir: str | Path | None = None,
         mca_path: str = "/",
         title: str = "Model Context API",
         version: float = 1.0,
+        help: str | None = None,
         error_responses: Mapping[int, Any] | None = None,
     ):
         self.api = api
         self.error_responses = error_responses or {}
-        super().__init__(guides_dir=guides_dir, mca_path=mca_path, title=title, version=version)
+        super().__init__(
+            guides_dir=guides_dir,
+            mca_path=mca_path,
+            title=title,
+            version=version,
+            help=help,
+        )
 
     def _discovery_endpoints(self) -> Iterable[tuple[str, str, F, Mapping[str, Any]]]:
         response = {
@@ -303,7 +310,7 @@ class NinjaMCARouter(BaseMCARouter):
 
         schema = {
             "route": discovery_route,
-            "description": operation.get("description") or operation.get("summary") or name,
+            "description": operation.get("description") or operation.get("summary") or route.description,
             "request_schema": request_schema,
             "response_schema": response_schema,
         }

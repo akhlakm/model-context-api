@@ -6,10 +6,10 @@ from mca.base import BaseMCARouter, MCAError, RegisteredRoute
 
 
 class FakeMCARouter(BaseMCARouter):
-    def __init__(self, guides_dir):
+    def __init__(self, guides_dir=None, **options):
         self.transport_routes = []
         self.transport_calls = []
-        super().__init__(guides_dir=guides_dir)
+        super().__init__(guides_dir=guides_dir, **options)
 
     def _discovery_endpoints(self):
         def get_mca():
@@ -91,6 +91,52 @@ class BaseMCARouterTests(TestCase):
 
             self.assertEqual(context.exception.code, "unknown_guides")
             self.assertEqual(context.exception.status, 404)
+
+    def test_guides_can_be_disabled_and_help_can_be_overridden(self):
+        router = FakeMCARouter(None, help="Use operation discovery.")
+
+        @router.register("/guided", guides=["workflow.md"])
+        def get_guided():
+            """Read guided data."""
+            return None
+
+        discovery = router.discovery(None, None, lambda route: route.relative_route)
+
+        self.assertEqual(discovery["help"], "Use operation discovery.")
+        self.assertNotIn("index", discovery)
+        self.assertNotIn("available_guides", discovery)
+        self.assertEqual(
+            discovery["available_operations"]["get_guided"],
+            "GET guided - Read guided data.",
+        )
+        with self.assertRaises(MCAError) as context:
+            router.guide_catalog.read("workflow.md")
+        self.assertEqual(context.exception.code, "unknown_guides")
+        self.assertEqual(context.exception.status, 404)
+
+    def test_register_and_register_all_use_endpoint_docstrings(self):
+        with TemporaryDirectory() as directory:
+            router = FakeMCARouter(directory)
+
+            @router.register("/documented")
+            def get_documented():
+                """Read documented data."""
+                return None
+
+            @router.register_all("/shared", operation_id="shared", methods=("GET", "POST"))
+            def shared():
+                """Use the shared operation implementation."""
+                return None
+
+            @router.register("/overridden", description="Explicit operation description.")
+            def get_overridden():
+                """This docstring should not win."""
+                return None
+
+            self.assertEqual(router.route("get_documented").description, "Read documented data.")
+            self.assertEqual(router.route("get_shared").description, "Use the shared operation implementation.")
+            self.assertEqual(router.route("make_shared").description, "Use the shared operation implementation.")
+            self.assertEqual(router.route("get_overridden").description, "Explicit operation description.")
 
     def test_routes_can_be_hidden_from_discovery(self):
         with TemporaryDirectory() as directory:
