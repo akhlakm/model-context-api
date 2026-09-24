@@ -297,6 +297,7 @@ from pathlib import Path
 
 from pydantic import BaseModel, Field
 
+from mca.base import MCAError
 from mca.pydantic import PydanticMCARouter
 
 
@@ -393,17 +394,17 @@ item = router.dispatch("/items/7", params={"verbose": True}, method="GET")
 ~~~
 
 Inputs are validated before an endpoint is called, and results are validated
-against return annotations. Invalid requests, unknown operations, unknown
-routes, and endpoint failures are returned as ErrorOut values:
+against return annotations. Invalid request data raises a structured
+MCAError with status 422. Unknown operations and routes raise errors with
+status 404, while endpoint failures use status 500 unless the endpoint raises
+an explicit status:
 
 ~~~python
-result = router.dispatch("/items/not-an-integer", method="GET")
-print(result.model_dump())
-# {
-#     "code": "invalid_request",
-#     "detail": "...",
-#     "field": "item_id",
-# }
+try:
+    router.dispatch("/items/not-an-integer", method="GET")
+except MCAError as exc:
+    print(exc.code, exc.status, exc.field)
+    # invalid_request 422 item_id
 ~~~
 
 Register several methods when one implementation has the same input and output
@@ -811,10 +812,11 @@ raise MCAError(
 ~~~
 
 The error has code, detail, an optional field, and an HTTP status. The Pydantic
-adapter converts MCA errors and validation failures into ErrorOut values. The
-Django Ninja adapter raises the error through the normal request path, so
-register an application exception handler when the API needs a consistent JSON
-shape. MCP converts the resulting HTTP error into an MCP tool error.
+adapter raises MCAError so an RPC client can preserve the error across a
+service boundary. The Django Ninja adapter catches MCAError raised by a
+registered operation and returns the structured ErrorOut payload with the
+matching HTTP status. MCP converts the resulting HTTP error into an MCP tool
+error.
 
 MCA does not impose an authentication policy. Normal Ninja requests use the
 authentication configured on the NinjaAPI or route. Internal execution and MCP

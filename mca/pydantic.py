@@ -6,14 +6,14 @@ import inspect
 import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
-from typing import Any, Callable, TypeVar, get_type_hints
+from typing import Any, Callable, NoReturn, TypeVar, get_type_hints
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from .base import BaseMCARouter, MCAError, RegisteredRoute
 from .composition import MCACompositionMixin
-from .models import (APIRouteSchemaOut, DiscoveryParams, ErrorOut,
-                     MCADiscoveryOut, MCAResponseOut)
+from .models import (APIRouteSchemaOut, DiscoveryParams, MCADiscoveryOut,
+                     MCAResponseOut)
 from .schema import attach_components, build_request_schema
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -39,16 +39,18 @@ def _validate_for_dispatch(annotation: Any, value: Any, source: str) -> Any:
         raise DispatchValidationError(source, exc.errors()) from exc
 
 
-def _validation_error_response(exc: DispatchValidationError) -> ErrorOut:
-    """Convert the first validation failure into the public MCA error envelope."""
+def _validation_error(exc: DispatchValidationError) -> MCAError:
+    """Convert a validation failure into a transport-neutral MCA error."""
     first_error = exc.errors[0] if exc.errors else {}
     location = first_error.get("loc", ())
     field = ".".join(str(part) for part in location) or exc.source
     code = "invalid_response" if exc.source == "response" else "invalid_request"
-    return ErrorOut(
+    status = 500 if code == "invalid_response" else 422
+    return MCAError(
         code=code,
         detail=str(first_error.get("msg", "Validation failed.")),
         field=field,
+        status=status,
     )
 
 
@@ -298,11 +300,11 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
         result = route.endpoint(**kwargs)
         return _validate_for_dispatch(route.meta("response_type"), result, "response")
 
-    def _dispatch_error(self, error: MCAError) -> ErrorOut:
-        """Map internal endpoint errors to the Pydantic error response model."""
+    def _dispatch_error(self, error: MCAError) -> NoReturn:
+        """Normalize and raise an MCA error for the caller or RPC transport."""
         code = "unknown_operation" if error.code == "unknown_endpoint" else error.code
         field = "operation" if error.code == "unknown_endpoint" else error.field
-        return ErrorOut(code=code, detail=error.detail, field=field)
+        raise MCAError(code, error.detail, field, error.status) from error
 
     def dispatch(
         self,
@@ -312,12 +314,12 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
         *,
         method: str = "GET",
     ) -> Any:
-        """Dispatch an operation and return a typed result or stable error model.
+        """Dispatch an operation and return a typed result or raise ``MCAError``.
 
         Request parameters and body values are validated from annotations before
         invocation, and the endpoint result is validated against its return
-        annotation. Validation and endpoint failures are returned as
-        ``ErrorOut`` values rather than raised to the caller.
+        annotation. Validation and endpoint failures carry stable codes and
+        HTTP-compatible statuses in the raised exception.
         """
         try:
             return super().dispatch(
@@ -327,12 +329,13 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
                 method=method,
             )
         except DispatchValidationError as exc:
-            return _validation_error_response(exc)
-        except MCAError as exc:
-            return self._dispatch_error(exc)
-        except Exception:
-            return ErrorOut(
-                code="internal_error",
-                detail="The endpoint could not complete the operation.",
-                field="operation",
-            )
+            raise _validation_error(exc) from exc
+        except MCAError:
+            raise
+        except Exception as exc:
+            raise MCAError(
+                "internal_error",
+                "The endpoint could not complete the operation.",
+                "operation",
+                500,
+            ) from exc

@@ -32,6 +32,9 @@ class MCAClient(Protocol):
 
         ``guide`` and ``operation`` may contain comma-separated names when the
         transport supports batched discovery.
+
+        Raises:
+            MCAError: When the mounted service reports a discovery failure.
         """
 
     def call(
@@ -46,6 +49,9 @@ class MCAClient(Protocol):
         ``params`` carries path/query-style values and ``data`` carries the
         operation body. The composition layer does not prescribe the RPC wire
         format.
+
+        Raises:
+            MCAError: When the mounted service reports an operation failure.
         """
 
 

@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
+from functools import wraps
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 from urllib.parse import quote, urlencode
@@ -129,12 +130,41 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         """Register an operation with the bound Ninja API and preserve variant options."""
         api_register = getattr(self.api, route.method.lower())
         route_options = dict(options)
+        route_options["response"] = self._response_models(route_options.get("response"))
         route_options.update({key: variant[key] for key in ("include_in_schema",) if key in variant})
-        return api_register(
+        api_register(
             variant.get("path", route.path),
             operation_id=variant.get("operation_id", route.operation),
             **route_options,
-        )(endpoint)
+        )(self._http_endpoint(endpoint))
+        return endpoint
+
+    @staticmethod
+    def _response_models(response: Any) -> dict[int, Any]:
+        """Add structured MCA error responses to a Ninja response declaration."""
+        if isinstance(response, Mapping):
+            responses = dict(response)
+        else:
+            responses = {200: Any if response is None else response}
+        for status in (400, 404, 422, 500, 502):
+            responses.setdefault(status, ErrorOut)
+        return responses
+
+    @staticmethod
+    def _http_endpoint(endpoint: F) -> F:
+        """Convert raised MCA errors into structured Ninja HTTP responses."""
+
+        @wraps(endpoint)
+        def wrapped(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return endpoint(*args, **kwargs)
+            except MCAError as exc:
+                return Status(
+                    exc.status,
+                    ErrorOut(code=exc.code, detail=exc.detail, field=exc.field),
+                )
+
+        return wrapped
 
     def execute_http(
         self,

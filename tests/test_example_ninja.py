@@ -253,3 +253,22 @@ class NinjaCompositionExampleTests(TestCase):
 
         self.assertEqual(response.status_code, 403)
         self.assertEqual(billing_rpc.calls, [])
+
+    def test_invalid_private_payload_returns_unprocessable_entity(self):
+        with override_settings(ROOT_URLCONF="demo.urls"):
+            response = Client().post(
+                "/api/invoices",
+                data=json.dumps({"customer": "Missing Total"}),
+                content_type="application/json",
+                HTTP_X_DEMO_TOKEN="demo-token",
+            )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            response.json(),
+            {
+                "code": "invalid_request",
+                "detail": "Field required",
+                "field": "total",
+            },
+        )

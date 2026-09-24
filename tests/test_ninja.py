@@ -461,6 +461,29 @@ class NinjaMCARouterPackageTests(TestCase):
         self.assertEqual(events, ["auth", ("handler", "principal"), "auth"])
         self.assertEqual(client.calls, [("get_invoice", {"invoice_id": 7}, None)])
 
+    def test_endpoint_mca_errors_become_structured_http_responses(self):
+        registry = NinjaMCARouter(Router())
+
+        @registry.register("/invalid", response=dict)
+        def get_invalid(request):
+            raise MCAError("invalid_request", "Missing required field.", "data", 422)
+
+        response = registry.execute_http(
+            "get_invalid",
+            RequestFactory().get("/invalid"),
+            allow_anonymous=True,
+        )
+
+        self.assertEqual(response.status_code, 422)
+        self.assertEqual(
+            json.loads(response.content),
+            {
+                "code": "invalid_request",
+                "detail": "Missing required field.",
+                "field": "data",
+            },
+        )
+
     def test_only_guides_attached_to_exposed_routes_are_published(self):
         class Client(FakeMCAClient):
             def discover(self, *, guide=None, operation=None):

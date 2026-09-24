@@ -5,7 +5,8 @@ from unittest import TestCase
 
 from pydantic import BaseModel
 
-from mca.models import ErrorOut, MCAResponseOut
+from mca.base import MCAError
+from mca.models import MCAResponseOut
 from mca.pydantic import PydanticMCARouter
 
 
@@ -136,14 +137,14 @@ class PydanticMCARouterPackageTests(TestCase):
 
         discovery = router.dispatch("get_mca")
         details = router.dispatch("get_mca", params={"operation": "get_guided"})
-        guide_error = router.dispatch("get_mca", params={"guide": "workflow.md"})
-
         self.assertEqual(discovery.help, "Use operation discovery.")
         self.assertNotIn("index", discovery.model_dump())
         self.assertNotIn("available_guides", discovery.model_dump())
         self.assertNotIn("guides", details.operations["get_guided"].model_dump())
-        self.assertIsInstance(guide_error, ErrorOut)
-        self.assertEqual(guide_error.code, "unknown_guides")
+        with self.assertRaises(MCAError) as context:
+            router.dispatch("get_mca", params={"guide": "workflow.md"})
+        self.assertEqual(context.exception.code, "unknown_guides")
+        self.assertEqual(context.exception.status, 404)
 
     def test_operation_schema_can_list_relevant_guides(self):
         @self.router.register("/guided", guides=["workflow.md"])
@@ -159,12 +160,39 @@ class PydanticMCARouterPackageTests(TestCase):
 
         self.assertEqual(set(details.model_dump()), {"guides"})
 
-    def test_invalid_dispatch_returns_package_error_model(self):
-        result = self.router.dispatch("/items/not-an-int", method="GET")
+    def test_invalid_dispatch_raises_structured_error(self):
+        with self.assertRaises(MCAError) as context:
+            self.router.dispatch("/items/not-an-int", method="GET")
 
-        self.assertIsInstance(result, ErrorOut)
-        self.assertEqual(result.code, "invalid_request")
-        self.assertEqual(result.field, "item_id")
+        self.assertEqual(context.exception.code, "invalid_request")
+        self.assertEqual(context.exception.field, "item_id")
+        self.assertEqual(context.exception.status, 422)
+
+    def test_invalid_response_raises_server_error(self):
+        router = PydanticMCARouter()
+
+        @router.register()
+        def get_invalid_response() -> ItemOut:
+            return {"wrong": "shape"}
+
+        with self.assertRaises(MCAError) as context:
+            router.dispatch("get_invalid_response")
+
+        self.assertEqual(context.exception.code, "invalid_response")
+        self.assertEqual(context.exception.status, 500)
+
+    def test_unexpected_endpoint_failure_raises_internal_error(self):
+        router = PydanticMCARouter()
+
+        @router.register()
+        def get_broken() -> ItemOut:
+            raise RuntimeError("database unavailable")
+
+        with self.assertRaises(MCAError) as context:
+            router.dispatch("get_broken")
+
+        self.assertEqual(context.exception.code, "internal_error")
+        self.assertEqual(context.exception.status, 500)
 
     def test_mount_requires_explicit_public_routes(self):
         client = FakeMCAClient()
@@ -194,11 +222,6 @@ class PydanticMCARouterPackageTests(TestCase):
             "get_public_invoice",
             params={"item_id": 7},
         )
-        mounted_result = self.router.dispatch(
-            "billing.get_invoice",
-            params={"invoice_id": 7},
-        )
-
         self.assertEqual(discovery.title, "Model Context API")
         self.assertEqual(discovery.index, "# MCA")
         self.assertIn("billing/invoices.md", discovery.available_guides)
@@ -212,23 +235,30 @@ class PydanticMCARouterPackageTests(TestCase):
             ["billing/invoices.md"],
         )
         self.assertEqual(result, ItemOut(item_id=7))
-        self.assertIsInstance(mounted_result, ErrorOut)
-        self.assertEqual(mounted_result.code, "unknown_operation")
+        with self.assertRaises(MCAError) as context:
+            self.router.dispatch(
+                "billing.get_invoice",
+                params={"invoice_id": 7},
+            )
+        self.assertEqual(context.exception.code, "unknown_operation")
+        self.assertEqual(context.exception.status, 404)
         self.assertEqual(client.calls, [("get_invoice", {"invoice_id": 7}, None)])
 
-        operation_result = self.router.dispatch(
-            "get_mca",
-            params={"operation": "billing.get_invoice"},
-        )
-        self.assertIsInstance(operation_result, ErrorOut)
-        self.assertEqual(operation_result.code, "unknown_operation")
+        with self.assertRaises(MCAError) as context:
+            self.router.dispatch(
+                "get_mca",
+                params={"operation": "billing.get_invoice"},
+            )
+        self.assertEqual(context.exception.code, "unknown_operation")
+        self.assertEqual(context.exception.status, 404)
 
-        guide_result = self.router.dispatch(
-            "get_mca",
-            params={"guide": "billing/index.md"},
-        )
-        self.assertIsInstance(guide_result, ErrorOut)
-        self.assertEqual(guide_result.code, "unknown_guides")
+        with self.assertRaises(MCAError) as context:
+            self.router.dispatch(
+                "get_mca",
+                params={"guide": "billing/index.md"},
+            )
+        self.assertEqual(context.exception.code, "unknown_guides")
+        self.assertEqual(context.exception.status, 404)
 
     def test_delegated_schema_composes_remote_body_and_response_for_generic_types(self):
         class SchemaClient(FakeMCAClient):
@@ -493,8 +523,9 @@ class PydanticMCARouterPackageTests(TestCase):
         def get_status() -> ItemOut:
             return ItemOut(item_id=1)
 
-        result = failing_router.dispatch("get_mca")
+        with self.assertRaises(MCAError) as context:
+            failing_router.dispatch("get_mca")
 
-        self.assertIsInstance(result, ErrorOut)
-        self.assertEqual(result.code, "upstream_unavailable")
-        self.assertEqual(result.field, "service")
+        self.assertEqual(context.exception.code, "upstream_unavailable")
+        self.assertEqual(context.exception.field, "service")
+        self.assertEqual(context.exception.status, 502)
