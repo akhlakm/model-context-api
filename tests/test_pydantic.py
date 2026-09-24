@@ -332,6 +332,87 @@ class PydanticMCARouterPackageTests(TestCase):
         )
         self.assertIn("item_id", typed_schema["response_schema"]["properties"])
 
+    def test_delegated_schema_discovery_batches_per_namespace(self):
+        class BatchClient:
+            def __init__(self):
+                self.discovery_calls = []
+
+            def discover(self, *, guide=None, operation=None):
+                self.discovery_calls.append((guide, operation))
+                return {
+                    "operations": {
+                        name: {
+                            "route": f"GET private/{name}",
+                            "description": f"Read {name}.",
+                            "request_schema": None,
+                            "response_schema": {
+                                "type": "object",
+                                "properties": {"operation": {"const": name}},
+                            },
+                        }
+                        for name in (operation or "").split(",")
+                    }
+                }
+
+            def call(self, operation, *, params=None, data=None):
+                return {"operation": operation}
+
+        router = PydanticMCARouter()
+        billing = BatchClient()
+        inventory = BatchClient()
+        router.mount("billing", billing)
+        router.mount("inventory", inventory)
+
+        @router.register(
+            "/first",
+            operation_id="get_public_first",
+            delegate_to="billing.get_first",
+        )
+        def get_public_first() -> dict[str, Any]:
+            return {}
+
+        @router.register(
+            "/second",
+            operation_id="get_public_second",
+            delegate_to="billing.get_second",
+        )
+        def get_public_second() -> dict[str, Any]:
+            return {}
+
+        @router.register(
+            "/shared",
+            operation_id="get_public_shared",
+            delegate_to="billing.get_first",
+        )
+        def get_public_shared() -> dict[str, Any]:
+            return {}
+
+        @router.register(
+            "/other",
+            operation_id="get_public_other",
+            delegate_to="inventory.get_other",
+        )
+        def get_public_other() -> dict[str, Any]:
+            return {}
+
+        router.dispatch("get_mca")
+        router.dispatch("get_mca")
+
+        self.assertEqual(billing.discovery_calls, [(None, "get_first,get_second")])
+        self.assertEqual(inventory.discovery_calls, [(None, "get_other")])
+
+        router.clear_remote_schema_cache()
+        router.dispatch("get_mca", params={"operation": "get_public_first"})
+
+        self.assertEqual(
+            billing.discovery_calls,
+            [(None, "get_first,get_second"), (None, "get_first,get_second")],
+        )
+        self.assertEqual(
+            inventory.discovery_calls,
+            [(None, "get_other"), (None, "get_other")],
+        )
+
     def test_explicit_composition_merges_mixed_guides_and_public_operation_schemas(self):
         client = FakeMCAClient()
         self.router.mount("billing", client)

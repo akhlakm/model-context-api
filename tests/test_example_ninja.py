@@ -104,7 +104,7 @@ class NinjaCompositionExampleTests(TestCase):
         self.assertNotIn("delegate_to", create_schema)
         self.assertEqual(
             [call["operation"] for call in billing_rpc.calls if call["method"] == "get_mca"],
-            ["make_invoice", "update_invoice"],
+            ["get_invoice,make_invoice,remove_invoice,update_invoice"],
         )
 
     def test_public_handler_authenticates_checks_acl_and_uses_rpc_client(self):

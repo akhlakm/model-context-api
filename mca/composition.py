@@ -122,6 +122,13 @@ class MCACompositionMixin:
             and route.meta("delegate_to") is not None
         )
 
+    def _delegated_operations_by_namespace(self) -> dict[str, set[str]]:
+        operations: dict[str, set[str]] = {}
+        for route in self._delegated_routes():
+            namespace, operation = self._delegate_target(route.meta("delegate_to"))
+            operations.setdefault(namespace, set()).add(operation)
+        return operations
+
     def _remote_discovery(
         self,
         namespace: str,
@@ -164,26 +171,65 @@ class MCACompositionMixin:
         cached = self._remote_schema_cache.get(cache_key)
         if cached is not None:
             return cached
-        result = self._remote_discovery(namespace, operation=operation)
-        operations = result.get("operations") or {}
-        if operation not in operations:
+        operations_by_namespace = self._delegated_operations_by_namespace()
+        operations_by_namespace.setdefault(namespace, set()).add(operation)
+        self._prefetch_remote_schemas(operations_by_namespace)
+        schema = self._remote_schema_cache.get(cache_key)
+        if schema is None:
             raise MCAError(
                 "unknown_operation",
                 f"Mounted MCA service '{namespace}' has no operation '{operation}'.",
                 "operation",
                 404,
             )
-        try:
-            schema = APIRouteSchemaOut.model_validate(operations[operation])
-        except ValidationError as exc:
-            raise MCAError(
-                "invalid_upstream_response",
-                f"Mounted MCA service '{namespace}' returned an invalid operation schema.",
-                "service",
-                502,
-            ) from exc
-        self._remote_schema_cache[cache_key] = schema
         return schema
+
+    def _prefetch_remote_schemas(
+        self,
+        operations_by_namespace: Mapping[str, set[str]] | None = None,
+    ) -> None:
+        """Fetch all missing delegated schemas in one request per service."""
+        grouped = (
+            self._delegated_operations_by_namespace()
+            if operations_by_namespace is None
+            else operations_by_namespace
+        )
+        for namespace in sorted(grouped):
+            missing = sorted(
+                operation
+                for operation in grouped[namespace]
+                if (namespace, operation) not in self._remote_schema_cache
+            )
+            if not missing:
+                continue
+
+            result = self._remote_discovery(namespace, operation=",".join(missing))
+            remote_operations = result.get("operations")
+            if not isinstance(remote_operations, Mapping):
+                remote_operations = {}
+
+            schemas: dict[tuple[str, str], APIRouteSchemaOut] = {}
+            for operation in missing:
+                if operation not in remote_operations:
+                    raise MCAError(
+                        "unknown_operation",
+                        f"Mounted MCA service '{namespace}' has no operation '{operation}'.",
+                        "operation",
+                        404,
+                    )
+                try:
+                    schemas[(namespace, operation)] = APIRouteSchemaOut.model_validate(
+                        remote_operations[operation]
+                    )
+                except ValidationError as exc:
+                    raise MCAError(
+                        "invalid_upstream_response",
+                        f"Mounted MCA service '{namespace}' returned an invalid operation schema.",
+                        "service",
+                        502,
+                    ) from exc
+
+            self._remote_schema_cache.update(schemas)
 
     @staticmethod
     def _is_generic_schema(schema: Any) -> bool:

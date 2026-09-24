@@ -426,6 +426,11 @@ router can mount private MCA services through a small client adapter. The
 client can use JSON-RPC, HTTP, or another transport; it only needs to provide
 `discover()` and `call()` methods.
 
+When discovery needs schemas for multiple delegated operations, the public
+router batches the missing operation names into one `get_mca` request per
+mounted service and caches each returned schema. Guide content is requested
+separately only when that guide is explicitly requested.
+
 #### PydanticMCARouter
 
 ~~~python
