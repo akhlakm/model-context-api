@@ -18,6 +18,7 @@ from ninja import NinjaAPI, Query, Router, Status
 from .base import BaseMCARouter, MCAError, RegisteredRoute
 from .composition import MCACompositionMixin
 from .models import ErrorOut, MCADiscoveryOut, MCAResponseOut
+from .schema import attach_components, build_request_schema
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -100,7 +101,13 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             ),
         )
 
-    def _register_transport_route(self, route: RegisteredRoute, endpoint: F, options: Mapping[str, Any], **variant: Any) -> F:
+    def _register_transport_route(
+        self,
+        route: RegisteredRoute,
+        endpoint: F,
+        options: Mapping[str, Any],
+        **variant: Any,
+    ) -> F:
         api_register = getattr(self.api, route.method.lower())
         route_options = dict(options)
         route_options.update({key: variant[key] for key in ("include_in_schema",) if key in variant})
@@ -142,11 +149,59 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         *,
         allow_anonymous: bool = False,
     ) -> HttpResponseBase:
+        route = self.route(operation)
+        path_values = dict(path_params or {})
+        request = self._build_execution_request(
+            route,
+            source_request,
+            path_values,
+            query_params,
+            body,
+        )
+        return self.execute_http(
+            operation,
+            request,
+            path_values,
+            allow_anonymous=allow_anonymous,
+        )
+
+    @staticmethod
+    def _copy_request_context(
+        request: HttpRequest,
+        source_request: HttpRequest,
+    ) -> None:
+        request.user = source_request.user
+        request.COOKIES = source_request.COOKIES.copy()
+        if hasattr(source_request, "session"):
+            request.session = source_request.session
+        if getattr(source_request, "_dont_enforce_csrf_checks", False):
+            request._dont_enforce_csrf_checks = True
+        request.META.update(
+            {
+                key: value
+                for key, value in source_request.META.items()
+                if key not in {
+                    "CONTENT_LENGTH",
+                    "CONTENT_TYPE",
+                    "PATH_INFO",
+                    "QUERY_STRING",
+                    "RAW_URI",
+                    "REQUEST_URI",
+                }
+            }
+        )
+
+    def _build_execution_request(
+        self,
+        route: RegisteredRoute,
+        source_request: HttpRequest | None,
+        path_values: Mapping[str, Any],
+        query_params: Mapping[str, Any] | None,
+        body: Any,
+    ) -> HttpRequest:
         from django.contrib.auth.models import AnonymousUser
         from django.test import RequestFactory
 
-        route = self.route(operation)
-        path_values = dict(path_params or {})
         query_string = urlencode(dict(query_params or {}), doseq=True)
         path = _request_path(route.path, path_values)
         if query_string:
@@ -166,33 +221,8 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         if source_request is None:
             request.user = AnonymousUser()
         else:
-            request.user = source_request.user
-            request.COOKIES = source_request.COOKIES.copy()
-            if hasattr(source_request, "session"):
-                request.session = source_request.session
-            if getattr(source_request, "_dont_enforce_csrf_checks", False):
-                request._dont_enforce_csrf_checks = True
-            request.META.update(
-                {
-                    key: value
-                    for key, value in source_request.META.items()
-                    if key not in {
-                        "CONTENT_LENGTH",
-                        "CONTENT_TYPE",
-                        "PATH_INFO",
-                        "QUERY_STRING",
-                        "RAW_URI",
-                        "REQUEST_URI",
-                    }
-                }
-            )
-
-        return self.execute_http(
-            operation,
-            request,
-            path_values,
-            allow_anonymous=allow_anonymous,
-        )
+            self._copy_request_context(request, source_request)
+        return request
 
     def _ninja_operation(self, operation: str) -> Any:
         api = self._operation_api()
@@ -207,35 +237,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         )
 
     def _get_mca(self, guide: str | None, operation_name: str | None):
-        if guide is None and operation_name is None:
-            result = self.discovery(None, None, self._route_schema)
-            remote_guides = self._exposed_remote_guides()
-            if remote_guides:
-                result["available_guides"] = sorted(
-                    set(result.get("available_guides") or []) | remote_guides
-                )
-            return result
-
-        local_guides, mounted_guides = self._split_remote_guides(guide)
-        result: dict[str, Any] = {}
-        if local_guides or operation_name is not None:
-            result.update(
-                self.discovery(
-                    ",".join(local_guides) if local_guides else None,
-                    operation_name,
-                    self._route_schema,
-                )
-            )
-        for namespace, guides in mounted_guides.items():
-            remote = self._remote_discovery(namespace, guide=",".join(guides))
-            if remote.get("guides") is not None:
-                result.setdefault("guides", {}).update(
-                    {
-                        f"{namespace}/{name}": content
-                        for name, content in remote["guides"].items()
-                    }
-                )
-        return result
+        return self._composed_discovery(guide, operation_name, self._route_schema)
 
     def _operation_api(self) -> Any:
         if not isinstance(self.api, Router):
@@ -250,100 +252,99 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             return api.get_openapi_schema(path_prefix="")
         return api.get_openapi_schema()
 
-    def _openapi_operation(self, name: str) -> dict[str, Any] | None:
-        schema = self._openapi_schema()
+    @staticmethod
+    def _find_openapi_operation(
+        schema: Mapping[str, Any],
+        name: str,
+    ) -> dict[str, Any] | None:
         for path_data in schema.get("paths", {}).values():
             for operation in path_data.values():
                 if isinstance(operation, dict) and operation.get("operationId") == name:
                     return operation
         return None
 
-    def _route_schema(self, route: RegisteredRoute) -> dict[str, Any]:
-        name = route.operation
-        discovery_route = route.discovery_route
-        operation = self._openapi_operation(name)
-        if operation is None:
-            raise MCAError(
-                "unknown_operation",
-                f"No schema is available for operation '{name}'.",
-                "operation",
-                404,
-            )
+    def _openapi_operation(self, name: str) -> dict[str, Any] | None:
+        return self._find_openapi_operation(self._openapi_schema(), name)
 
-        openapi_schema = self._openapi_schema()
-        components = openapi_schema.get("components", {}).get("schemas", {})
+    @staticmethod
+    def _openapi_parameter_sections(
+        operation: Mapping[str, Any],
+        route_path: str,
+    ) -> tuple[dict[str, dict[str, Any]], set[str]]:
         path_properties: dict[str, Any] = {}
         path_required: list[str] = []
         query_properties: dict[str, Any] = {}
         query_required: list[str] = []
-        route_path = route.path
-        template_path_parameters = re.findall(r"\{([^}]+)\}", route_path)
+        template_parameters = re.findall(r"\{([^}]+)\}", route_path)
         openapi_path_parameters = [
             parameter["name"]
             for parameter in operation.get("parameters", [])
             if parameter.get("in") == "path"
         ]
-        path_parameter_names = dict(zip(openapi_path_parameters, template_path_parameters))
+        path_parameter_names = dict(zip(openapi_path_parameters, template_parameters))
         for parameter in operation.get("parameters", []):
             parameter_name = path_parameter_names.get(parameter["name"], parameter["name"])
             parameter_schema = deepcopy(parameter.get("schema", {}))
-            parameter_schema["description"] = parameter.get("description") or f"{parameter_name} request parameter."
+            parameter_schema["description"] = parameter.get("description") or (
+                f"{parameter_name} request parameter."
+            )
             if parameter.get("in") == "path":
-                properties = path_properties
-                required = path_required
+                properties, required = path_properties, path_required
             else:
-                properties = query_properties
-                required = query_required
+                properties, required = query_properties, query_required
             properties[parameter_name] = parameter_schema
             if parameter.get("required"):
                 required.append(parameter_name)
 
+        sections: dict[str, dict[str, Any]] = {}
+        if path_properties:
+            sections["path_params"] = {
+                "description": "Values captured from the operation route.",
+                "properties": path_properties,
+                "required": path_required,
+            }
+        if query_properties:
+            sections["query_params"] = {
+                "description": "Values supplied as operation query parameters.",
+                "properties": query_properties,
+                "required": query_required,
+            }
+        required_sections = {
+            name
+            for name, section in sections.items()
+            if section["required"]
+        }
+        return sections, required_sections
+
+    def _openapi_request_schema(
+        self,
+        operation: Mapping[str, Any],
+        route_path: str,
+        components: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
+        sections, required_sections = self._openapi_parameter_sections(operation, route_path)
         body_schema = (
             operation.get("requestBody", {})
             .get("content", {})
             .get("application/json", {})
             .get("schema")
         )
-        request_properties: dict[str, Any] = {}
-        request_required: list[str] = []
-        if path_properties:
-            request_properties["path_params"] = {
-                "description": "Values captured from the operation route.",
-                "type": "object",
-                "properties": path_properties,
-                "required": path_required,
-            }
-            if path_required:
-                request_required.append("path_params")
-        if query_properties:
-            request_properties["query_params"] = {
-                "description": "Values supplied as operation query parameters.",
-                "type": "object",
-                "properties": query_properties,
-                "required": query_required,
-            }
-            if query_required:
-                request_required.append("query_params")
-        if body_schema is not None:
-            request_properties["body"] = {
-                "description": "JSON request body.",
-                **deepcopy(body_schema),
-            }
-            if operation.get("requestBody", {}).get("required"):
-                request_required.append("body")
+        request_schema = build_request_schema(
+            sections,
+            required_sections,
+            body_schema=body_schema,
+            body_required=bool(operation.get("requestBody", {}).get("required")),
+        )
+        if request_schema is None:
+            return None
+        request_components = self._referenced_components(request_schema, components)
+        return attach_components(request_schema, request_components)
 
-        request_schema = None
-        if request_properties:
-            request_shape = {
-                "type": "object",
-                "properties": request_properties,
-                "required": request_required,
-            }
-            request_schema = {**request_shape}
-            request_components = self._referenced_components(request_shape, components)
-            if request_components:
-                request_schema["components"] = {"schemas": request_components}
-
+    def _openapi_response_schema(
+        self,
+        operation: Mapping[str, Any],
+        components: Mapping[str, Any],
+    ) -> dict[str, Any] | None:
         response_schema = None
         for status in (200, 201):
             response_schema = (
@@ -355,11 +356,28 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             )
             if response_schema is not None:
                 break
-        if response_schema is not None:
-            response_schema = deepcopy(response_schema)
-            response_components = self._referenced_components(response_schema, components)
-            if response_components:
-                response_schema["components"] = {"schemas": response_components}
+        if response_schema is None:
+            return None
+        response_schema = deepcopy(response_schema)
+        response_components = self._referenced_components(response_schema, components)
+        return attach_components(response_schema, response_components)
+
+    def _route_schema(self, route: RegisteredRoute) -> dict[str, Any]:
+        name = route.operation
+        discovery_route = route.discovery_route
+        openapi_schema = self._openapi_schema()
+        operation = self._find_openapi_operation(openapi_schema, name)
+        if operation is None:
+            raise MCAError(
+                "unknown_operation",
+                f"No schema is available for operation '{name}'.",
+                "operation",
+                404,
+            )
+
+        components = openapi_schema.get("components", {}).get("schemas", {})
+        request_schema = self._openapi_request_schema(operation, route.path, components)
+        response_schema = self._openapi_response_schema(operation, components)
 
         schema = {
             "route": discovery_route,

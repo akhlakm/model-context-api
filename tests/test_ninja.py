@@ -26,6 +26,7 @@ from mca.ninja import NinjaMCARouter
 class FakeAPI:
     def __init__(self):
         self.calls = []
+        self.openapi_calls = 0
 
     def get(self, path, **options):
         return self._decorator("GET", path, options)
@@ -50,6 +51,7 @@ class FakeAPI:
         return decorator
 
     def get_openapi_schema(self):
+        self.openapi_calls += 1
         return {
             "paths": {
                 "/guided": {
@@ -218,6 +220,19 @@ class NinjaMCARouterPackageTests(TestCase):
         documented_call = next(call for call in api.calls if call[2].get("operation_id") == "get_documented")
         self.assertEqual(documented_call[2]["description"], "Read documented data.")
 
+    def test_route_schema_reads_openapi_document_once(self):
+        api = FakeAPI()
+        router = NinjaMCARouter(api)
+
+        @router.register("/invoices/{invoice_id}", response=dict)
+        def get_invoice(request, invoice_id: int):
+            return {"invoice_id": invoice_id}
+
+        api.openapi_calls = 0
+        router._route_schema(router.route("get_invoice"))
+
+        self.assertEqual(api.openapi_calls, 1)
+
     def test_router_backed_registry_supports_schema_and_execution(self):
         def authenticate(request):
             return "allowed" if getattr(request, "_mca_allow_anonymous", False) else None
@@ -275,7 +290,10 @@ class NinjaMCARouterPackageTests(TestCase):
         self.assertEqual(schema["route"], "GET invoices/{invoice_id}")
         self.assertEqual(schema["description"], "Read a public invoice.")
         self.assertEqual(schema["guides"], ["billing/invoices.md"])
-        self.assertEqual(schema["request_schema"]["properties"]["path_params"]["properties"]["invoice_id"]["type"], "integer")
+        self.assertEqual(
+            schema["request_schema"]["properties"]["path_params"]["properties"]["invoice_id"]["type"],
+            "integer",
+        )
 
         root = router._get_mca(None, None)
         self.assertEqual(set(root["available_operations"]), {"get_invoice"})

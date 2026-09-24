@@ -155,7 +155,13 @@ class BaseMCARouter:
         self._routes[operation] = replace(route, endpoint=registered_endpoint)
         return registered_endpoint
 
-    def _register_endpoint(self, path: str | None, operation: str, endpoint: F, options: Mapping[str, Any]) -> F:
+    def _register_endpoint(
+        self,
+        path: str | None,
+        operation: str,
+        endpoint: F,
+        options: Mapping[str, Any],
+    ) -> F:
         self._validate_route_path(path)
         method = self._method_for_endpoint(endpoint)
         self._validate_route_registration(path, method, operation)
@@ -166,7 +172,12 @@ class BaseMCARouter:
         if path is None:
             raise ValueError("MCA route path must be specified.")
 
-    def _register_route_variant(self, route: RegisteredRoute, endpoint: F, options: Mapping[str, Any]) -> None:
+    def _register_route_variant(
+        self,
+        route: RegisteredRoute,
+        endpoint: F,
+        options: Mapping[str, Any],
+    ) -> None:
         if route.path is None:
             return
         canonical_path = route.path.rstrip("/") or "/"
@@ -243,10 +254,14 @@ class BaseMCARouter:
     def _validate_route_registration(self, path: str | None, method: str, operation: str) -> None:
         if operation in self._routes:
             raise ValueError(f"MCA operation {operation!r} is already registered.")
-        if path is not None and any(route.method == method and route.path == path for route in self._routes.values()):
+        if path is not None and any(
+            route.method == method and route.path == path
+            for route in self._routes.values()
+        ):
             raise ValueError(f"MCA route {method} {path!r} is already registered.")
 
-    def routes(self) -> tuple[RegisteredRoute, ...]: return tuple(self._routes.values())
+    def routes(self) -> tuple[RegisteredRoute, ...]:
+        return tuple(self._routes.values())
 
     def route(self, operation: str) -> RegisteredRoute:
         route = self._routes.get(operation)
@@ -305,7 +320,12 @@ class BaseMCARouter:
             route_path = operation
             resolved = self.resolve(method, route_path)
             if resolved is None:
-                return self._error("unknown_route", f"No route matches {method.upper()} {route_path}.", "path", 404)
+                return self._error(
+                    "unknown_route",
+                    f"No route matches {method.upper()} {route_path}.",
+                    "path",
+                    404,
+                )
             operation, path_params = resolved
             params = {**(params or {}), **path_params}
 

@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
-import json
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -13,7 +13,6 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from .base import MCAError
 from .ninja import NinjaMCARouter
-
 
 BODY_METHODS = {"POST", "PUT", "PATCH"}
 
@@ -158,14 +157,25 @@ class MCPHost:
             try:
                 return self._call_route(registry, route, body, rest_base_path)
             except MCAError as exc:
-                raise ToolError(json.dumps({"code": exc.code, "detail": exc.detail, "field": exc.field, "status": exc.status}, ensure_ascii=False)) from exc
+                raise ToolError(
+                    json.dumps(
+                        {
+                            "code": exc.code,
+                            "detail": exc.detail,
+                            "field": exc.field,
+                            "status": exc.status,
+                        },
+                        ensure_ascii=False,
+                    )
+                ) from exc
 
         call_api.__name__ = tool_name
         return server
 
     def discover_routes(self) -> tuple[MCPRoute, ...]:
-        from django.apps import apps
         from importlib import import_module
+
+        from django.apps import apps
 
         routes: list[MCPRoute] = []
         paths: set[str] = set()

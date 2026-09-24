@@ -143,10 +143,22 @@ class BaseMCARouterTests(TestCase):
                 """This docstring should not win."""
                 return None
 
-            self.assertEqual(router.route("get_documented").description, "Read documented data.")
-            self.assertEqual(router.route("get_shared").description, "Use the shared operation implementation.")
-            self.assertEqual(router.route("make_shared").description, "Use the shared operation implementation.")
-            self.assertEqual(router.route("get_overridden").description, "Explicit operation description.")
+            self.assertEqual(
+                router.route("get_documented").description,
+                "Read documented data.",
+            )
+            self.assertEqual(
+                router.route("get_shared").description,
+                "Use the shared operation implementation.",
+            )
+            self.assertEqual(
+                router.route("make_shared").description,
+                "Use the shared operation implementation.",
+            )
+            self.assertEqual(
+                router.route("get_overridden").description,
+                "Explicit operation description.",
+            )
 
     def test_routes_can_be_hidden_from_discovery(self):
         with TemporaryDirectory() as directory:

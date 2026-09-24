@@ -14,6 +14,7 @@ from .base import BaseMCARouter, MCAError, RegisteredRoute
 from .composition import MCACompositionMixin
 from .models import (APIRouteSchemaOut, DiscoveryParams, ErrorOut,
                      MCADiscoveryOut, MCAResponseOut)
+from .schema import attach_components, build_request_schema
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -90,7 +91,13 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
             ),
         )
 
-    def _register_transport_route(self, route: RegisteredRoute, endpoint: F, options: Mapping[str, Any], **_: Any) -> F:
+    def _register_transport_route(
+        self,
+        route: RegisteredRoute,
+        endpoint: F,
+        options: Mapping[str, Any],
+        **_: Any,
+    ) -> F:
         return endpoint
 
     def _route_metadata(self, endpoint: F, options: Mapping[str, Any]) -> Mapping[str, Any]:
@@ -149,23 +156,20 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
             for parameter in re.findall(r"\{([^}]+)\}", route)
         }
 
-    def _route_schema(self, route: RegisteredRoute) -> APIRouteSchemaOut:
-        request_properties: dict[str, Any] = {}
-        request_required: list[str] = []
+    def _parameter_sections(
+        self,
+        route: RegisteredRoute,
+    ) -> tuple[dict[str, dict[str, Any]], set[str], dict[str, Any]]:
         components: dict[str, Any] = {}
-
-        params_type = route.meta("params_type")
-        body_type = route.meta("body_type")
-        response_type = route.meta("response_type")
-        params_schema, params_components = self._schema_parts(params_type)
+        params_schema, params_components = self._schema_parts(route.meta("params_type"))
         components.update(params_components)
         params_properties = params_schema.get("properties", {})
         params_required = set(params_schema.get("required", []))
         path_names = self._path_parameter_names(route.path)
 
         path_properties: dict[str, Any] = {}
-        path_required: list[str] = []
         query_properties: dict[str, Any] = {}
+        path_required: list[str] = []
         query_required: list[str] = []
         for name, property_schema in params_properties.items():
             property_schema = deepcopy(property_schema)
@@ -178,92 +182,73 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
                 if name in params_required:
                     query_required.append(name)
 
+        sections: dict[str, dict[str, Any]] = {}
         if path_properties:
-            request_properties["path_params"] = {
+            sections["path_params"] = {
                 "description": "Values captured from the selected operation route.",
-                "type": "object",
                 "properties": path_properties,
                 "required": path_required,
             }
-            request_required.append("path_params")
         if query_properties:
-            request_properties["query_params"] = {
+            sections["query_params"] = {
                 "description": "Values supplied as operation query parameters.",
-                "type": "object",
                 "properties": query_properties,
                 "required": query_required,
             }
-            if query_required:
-                request_required.append("query_params")
+        required_sections: set[str] = set()
+        if path_properties:
+            required_sections.add("path_params")
+        if query_required:
+            required_sections.add("query_params")
+        return sections, required_sections, components
 
-        body_required = bool(route.meta("body_required"))
+    def _request_schema(self, route: RegisteredRoute) -> dict[str, Any] | None:
+        sections, required_sections, components = self._parameter_sections(route)
+        body_schema = None
+        body_type = route.meta("body_type")
         if body_type is not None and body_type is not Any:
             body_schema, body_components = self._referenced_schema(body_type)
             components.update(body_components)
-            request_properties["body"] = {
-                "description": "JSON request body.",
-                **body_schema,
-            }
-            if body_required:
-                request_required.append("body")
+        return build_request_schema(
+            sections,
+            required_sections,
+            body_schema=body_schema,
+            body_required=bool(route.meta("body_required")),
+            components=components,
+        )
 
-        request_schema = None
-        if request_properties:
-            request_schema = {
-                "type": "object",
-                "properties": request_properties,
-                "required": request_required,
-            }
-            if components:
-                request_schema["components"] = {"schemas": components}
+    def _response_schema(self, route: RegisteredRoute) -> dict[str, Any] | None:
+        response_type = route.meta("response_type")
+        if response_type is None or response_type is Any:
+            return None
+        response_schema, response_components = self._referenced_schema(response_type)
+        return attach_components(response_schema, response_components)
 
-        response_schema = None
-        if response_type is not None and response_type is not Any:
-            response_schema, response_components = self._referenced_schema(response_type)
-            if response_components:
-                response_schema["components"] = {"schemas": response_components}
-
+    def _route_schema(self, route: RegisteredRoute) -> APIRouteSchemaOut:
         local_schema = APIRouteSchemaOut(
             route=route.discovery_route,
             description=route.description,
             guides=self._route_guides(route),
-            request_schema=request_schema,
-            response_schema=response_schema,
+            request_schema=self._request_schema(route),
+            response_schema=self._response_schema(route),
         )
+
         return APIRouteSchemaOut.model_validate(
             self._compose_route_schema(route, local_schema.model_dump())
         )
 
     def _get_mca(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
-        if params.guide is None and params.operation_name is None:
-            result = self.discovery(None, None, self._route_schema)
-            remote_guides = self._exposed_remote_guides()
-            if remote_guides:
-                result["available_guides"] = sorted(
-                    set(result.get("available_guides") or []) | remote_guides
-                )
-            return MCAResponseOut(**result)
-
-        local_guides, mounted_guides = self._split_remote_guides(params.guide)
-        result: dict[str, Any] = {}
-        if local_guides or params.operation_name is not None:
-            result.update(
-                self.discovery(
-                    ",".join(local_guides) if local_guides else None,
-                    params.operation_name,
-                    self._route_schema,
-                )
-            )
-        for namespace, guides in mounted_guides.items():
-            remote = self._remote_discovery(namespace, guide=",".join(guides))
-            if remote.get("guides") is not None:
-                result.setdefault("guides", {}).update(
-                    {
-                        f"{namespace}/{name}": content
-                        for name, content in remote["guides"].items()
-                    }
-                )
-        return MCADiscoveryOut(**result)
+        result = self._composed_discovery(
+            params.guide,
+            params.operation_name,
+            self._route_schema,
+        )
+        response_model = (
+            MCAResponseOut
+            if params.guide is None and params.operation_name is None
+            else MCADiscoveryOut
+        )
+        return response_model(**result)
 
     def _dispatch_registered(
         self,
