@@ -472,6 +472,42 @@ The private service remains unreachable directly by public clients. Its own
 router continues to validate its inputs and outputs; the public router only
 forwards the operation name, parameters, and body.
 
+### Composing a private service from Django Ninja
+
+Ninja composition is explicit. Mounting a private client does not register
+any of its routes on the public API. Each public operation gets its own route,
+authorization, and handler; the handler can perform authentication, ACL,
+tracking, or input transformation before calling the private operation:
+
+~~~python
+from ninja import NinjaAPI
+from mca.ninja import NinjaMCARouter
+
+api = NinjaAPI()
+public_router = NinjaMCARouter(api, title="Public API")
+billing = JsonRpcMCAClient(billing_rpc)
+public_router.mount("billing", billing)
+
+
+@public_router.register(
+    "/invoices/{invoice_id}",
+    operation_id="get_invoice",
+    response=InvoiceOut,
+    auth=public_auth,
+    delegate_to="billing.get_invoice",
+)
+def get_invoice(request, invoice_id: int):
+    audit.log(request.auth, "get_invoice", invoice_id)
+    return billing.call("get_invoice", params={"invoice_id": invoice_id})
+~~~
+
+`delegate_to` is discovery metadata and is not passed to Django Ninja. The
+public operation name and route remain authoritative, so discovery publishes
+`get_invoice` and its public request/response schema—not the private route.
+Guides attached to the private operation are available under names such as
+`billing/invoices.md`. Private operations and unassociated private guides are
+not published unless another public route explicitly delegates to them.
+
 ## Django Ninja APIs
 
 Use NinjaMCARouter to register operations on either a NinjaAPI or a Django

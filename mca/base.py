@@ -18,7 +18,7 @@ METHOD_PREFIXES = {
     "update_": "PATCH",
     "remove_": "DELETE",
 }
-_DISCOVERY_OPTIONS = {"guides", "include_in_discovery"}
+_DISCOVERY_OPTIONS = {"delegate_to", "guides", "include_in_discovery"}
 
 
 class MCAError(Exception):
@@ -138,6 +138,8 @@ class BaseMCARouter:
             metadata["guides"] = options["guides"]
         if options.get("include_in_discovery") is False:
             metadata["include_in_discovery"] = False
+        if options.get("delegate_to") is not None:
+            metadata["delegate_to"] = options["delegate_to"]
         docstring = inspect.getdoc(endpoint)
         description = options.get("description") or docstring or operation.replace("_", " ").capitalize()
         route = RegisteredRoute(method, path, operation, endpoint, description, metadata)
