@@ -36,15 +36,32 @@ class NinjaCompositionExampleTests(TestCase):
     def test_public_discovery_exposes_only_explicit_public_operation(self):
         discovery = public_mca._get_mca(None, None)
 
-        self.assertIn("get_public_invoice", discovery["available_operations"])
+        self.assertEqual(
+            set(discovery["available_operations"]),
+            {
+                "get_public_invoice",
+                "make_public_invoice",
+                "update_public_invoice",
+                "remove_public_invoice",
+            },
+        )
         self.assertNotIn("billing.get_invoice", discovery["available_operations"])
         self.assertIn("billing/invoices.md", discovery["available_guides"])
         self.assertNotIn("billing/index.md", discovery["available_guides"])
 
-        details = public_mca._get_mca(None, "get_public_invoice")
+        expected_routes = {
+            "get_public_invoice": "GET invoices/{invoice_id}",
+            "make_public_invoice": "POST invoices",
+            "update_public_invoice": "PATCH invoices/{invoice_id}",
+            "remove_public_invoice": "DELETE invoices/{invoice_id}",
+        }
+        details = public_mca._get_mca(None, ",".join(expected_routes))
         self.assertEqual(
-            details["operations"]["get_public_invoice"]["route"],
-            "GET invoices/{invoice_id}",
+            {
+                name: schema["route"]
+                for name, schema in details["operations"].items()
+            },
+            expected_routes,
         )
 
     def test_public_handler_authenticates_checks_acl_and_uses_rpc_client(self):
@@ -89,3 +106,53 @@ class NinjaCompositionExampleTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["status"], "open")
         self.assertEqual(billing_rpc.calls[-1]["method"], "get_invoice")
+
+    def test_public_write_operations_delegate_with_params_and_body(self):
+        with override_settings(ROOT_URLCONF="demo.urls"):
+            client = Client()
+            created = client.post(
+                "/api/invoices",
+                data=json.dumps({"customer": "New Customer", "total": 42.5}),
+                content_type="application/json",
+                HTTP_X_DEMO_TOKEN="demo-token",
+            )
+            updated = client.patch(
+                "/api/invoices/7",
+                data=json.dumps({"status": "paid"}),
+                content_type="application/json",
+                HTTP_X_DEMO_TOKEN="demo-token",
+            )
+            deleted = client.delete(
+                "/api/invoices/7",
+                HTTP_X_DEMO_TOKEN="demo-token",
+            )
+
+        self.assertEqual(created.status_code, 200)
+        self.assertEqual(created.json()["invoice_id"], 8)
+        self.assertEqual(updated.status_code, 200)
+        self.assertEqual(updated.json()["status"], "paid")
+        self.assertEqual(deleted.status_code, 200)
+        self.assertEqual(deleted.json(), {"invoice_id": 7, "status": "deleted"})
+        self.assertEqual(
+            [call["method"] for call in billing_rpc.calls],
+            ["make_invoice", "update_invoice", "remove_invoice"],
+        )
+        self.assertEqual(
+            billing_rpc.calls[0]["data"],
+            {"customer": "New Customer", "total": 42.5},
+        )
+        self.assertEqual(billing_rpc.calls[1]["params"], {"invoice_id": 7})
+        self.assertEqual(billing_rpc.calls[1]["data"], {"status": "paid"})
+        self.assertEqual(billing_rpc.calls[2]["params"], {"invoice_id": 7})
+
+    def test_write_acl_failure_prevents_private_rpc_call(self):
+        with override_settings(ROOT_URLCONF="demo.urls"):
+            response = Client().post(
+                "/api/invoices",
+                data=json.dumps({"customer": "Denied", "total": 1}),
+                content_type="application/json",
+                HTTP_X_DEMO_TOKEN="limited-token",
+            )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(billing_rpc.calls, [])

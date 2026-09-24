@@ -13,10 +13,26 @@ class InvoiceParams(BaseModel):
     invoice_id: int
 
 
+class InvoiceCreate(BaseModel):
+    customer: str
+    total: float
+
+
+class InvoiceUpdate(BaseModel):
+    customer: str | None = None
+    total: float | None = None
+    status: str | None = None
+
+
 class InvoiceOut(BaseModel):
     invoice_id: int
     customer: str
     total: float
+    status: str
+
+
+class InvoiceDeletedOut(BaseModel):
+    invoice_id: int
     status: str
 
 
@@ -39,3 +55,40 @@ def get_invoice(params: InvoiceParams) -> InvoiceOut:
         total=125.50,
         status="open",
     )
+
+
+@private_router.register(
+    "/private/invoices",
+    guides=["invoices.md"],
+)
+def make_invoice(data: InvoiceCreate) -> InvoiceOut:
+    """Create an invoice in the private billing service."""
+    return InvoiceOut(
+        invoice_id=8,
+        customer=data.customer,
+        total=data.total,
+        status="open",
+    )
+
+
+@private_router.register(
+    "/private/invoices/{invoice_id}",
+    guides=["invoices.md"],
+)
+def update_invoice(params: InvoiceParams, data: InvoiceUpdate) -> InvoiceOut:
+    """Update an invoice in the private billing service."""
+    return InvoiceOut(
+        invoice_id=params.invoice_id,
+        customer=data.customer or "Example Customer",
+        total=data.total if data.total is not None else 125.50,
+        status=data.status or "open",
+    )
+
+
+@private_router.register(
+    "/private/invoices/{invoice_id}",
+    guides=["invoices.md"],
+)
+def remove_invoice(params: InvoiceParams) -> InvoiceDeletedOut:
+    """Delete an invoice from the private billing service."""
+    return InvoiceDeletedOut(invoice_id=params.invoice_id, status="deleted")

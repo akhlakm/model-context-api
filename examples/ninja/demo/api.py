@@ -10,7 +10,8 @@ from ninja.errors import HttpError
 
 from mca.ninja import NinjaMCARouter
 
-from .private import InvoiceOut
+from .private import (InvoiceCreate, InvoiceDeletedOut, InvoiceOut,
+                      InvoiceUpdate)
 from .rpc import billing_rpc
 
 LOGGER = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ def demo_auth(request: HttpRequest) -> dict[str, Any] | None:
     principals = {
         "demo-token": {
             "subject": "demo-user",
-            "scopes": {"billing:read"},
+            "scopes": {"billing:read", "billing:write", "billing:delete"},
             "invoice_ids": {7},
         },
         "limited-token": {
@@ -41,6 +42,18 @@ def demo_auth(request: HttpRequest) -> dict[str, Any] | None:
         },
     }
     return principals.get(request.headers.get("X-Demo-Token"))
+
+
+def require_access(
+    request: HttpRequest,
+    scope: str,
+    invoice_id: int | None = None,
+) -> None:
+    """Apply the example's scope and resource-level access checks."""
+    if scope not in request.auth["scopes"]:
+        raise HttpError(403, f"The authenticated caller lacks the {scope} scope.")
+    if invoice_id is not None and invoice_id not in request.auth["invoice_ids"]:
+        raise HttpError(403, "The authenticated caller cannot access this invoice.")
 
 
 @public_mca.register(
@@ -53,8 +66,7 @@ def demo_auth(request: HttpRequest) -> dict[str, Any] | None:
 )
 def get_public_invoice(request: HttpRequest, invoice_id: int) -> InvoiceOut:
     """Authenticate, authorize, track, and then delegate invoice access."""
-    if invoice_id not in request.auth["invoice_ids"]:
-        raise HttpError(403, "The authenticated caller cannot access this invoice.")
+    require_access(request, "billing:read", invoice_id)
 
     LOGGER.info(
         "invoice_access subject=%s invoice_id=%s",
@@ -66,3 +78,70 @@ def get_public_invoice(request: HttpRequest, invoice_id: int) -> InvoiceOut:
         params={"invoice_id": invoice_id},
     )
     return InvoiceOut.model_validate(result)
+
+
+@public_mca.register(
+    "/invoices",
+    operation_id="make_public_invoice",
+    response=InvoiceOut,
+    auth=demo_auth,
+    guides=["api.md"],
+    delegate_to="billing.make_invoice",
+)
+def make_public_invoice(request: HttpRequest, payload: InvoiceCreate) -> InvoiceOut:
+    """Authorize and delegate invoice creation."""
+    require_access(request, "billing:write")
+    LOGGER.info("invoice_create subject=%s", request.auth["subject"])
+    result = billing_rpc.call("make_invoice", data=payload.model_dump())
+    return InvoiceOut.model_validate(result)
+
+
+@public_mca.register(
+    "/invoices/{invoice_id}",
+    operation_id="update_public_invoice",
+    response=InvoiceOut,
+    auth=demo_auth,
+    guides=["api.md"],
+    delegate_to="billing.update_invoice",
+)
+def update_public_invoice(
+    request: HttpRequest,
+    invoice_id: int,
+    payload: InvoiceUpdate,
+) -> InvoiceOut:
+    """Authorize and delegate invoice updates."""
+    require_access(request, "billing:write", invoice_id)
+    LOGGER.info(
+        "invoice_update subject=%s invoice_id=%s",
+        request.auth["subject"],
+        invoice_id,
+    )
+    result = billing_rpc.call(
+        "update_invoice",
+        params={"invoice_id": invoice_id},
+        data=payload.model_dump(exclude_unset=True),
+    )
+    return InvoiceOut.model_validate(result)
+
+
+@public_mca.register(
+    "/invoices/{invoice_id}",
+    operation_id="remove_public_invoice",
+    response=InvoiceDeletedOut,
+    auth=demo_auth,
+    guides=["api.md"],
+    delegate_to="billing.remove_invoice",
+)
+def remove_public_invoice(request: HttpRequest, invoice_id: int) -> InvoiceDeletedOut:
+    """Authorize and delegate invoice deletion."""
+    require_access(request, "billing:delete", invoice_id)
+    LOGGER.info(
+        "invoice_delete subject=%s invoice_id=%s",
+        request.auth["subject"],
+        invoice_id,
+    )
+    result = billing_rpc.call(
+        "remove_invoice",
+        params={"invoice_id": invoice_id},
+    )
+    return InvoiceDeletedOut.model_validate(result)
