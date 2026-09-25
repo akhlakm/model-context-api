@@ -7,7 +7,7 @@ ALLOWED_HOSTS = ["*"]
 ROOT_URLCONF = "demo.urls"
 ASGI_APPLICATION = "demo.asgi.application"
 
-INSTALLED_APPS: list[str] = []
+INSTALLED_APPS: list[str] = ["demo"]
 MIDDLEWARE: list[str] = []
 
 DATABASES = {

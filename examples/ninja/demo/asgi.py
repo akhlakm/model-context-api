@@ -4,6 +4,6 @@ import os
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "demo.settings")
 
-from django.core.asgi import get_asgi_application
+from mca.mcp import MCPHost
 
-application = get_asgi_application()
+application = MCPHost()

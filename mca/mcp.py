@@ -12,14 +12,16 @@ from urllib.parse import parse_qs, urlsplit
 
 from django.http import HttpRequest
 from mcp.server import MCPServer
+from mcp.server.mcpserver.context import Context as MCPContext
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .base import MCAError
 from .ninja import MCAExecutionError, NinjaMCARouter
+from .request import build_request
 
 BODY_METHODS = {"POST", "PUT", "PATCH"}
 RequestContextFactory = Callable[
-    [str, str, str, Mapping[str, Any], Mapping[str, Any], Any],
+    [str, str, str, Mapping[str, Any], Mapping[str, Any], Any, Mapping[str, str]],
     HttpRequest | None | Awaitable[HttpRequest | None],
 ]
 
@@ -47,7 +49,9 @@ class MCPHost:
 
         ``request_context_factory`` may return a request carrying the user,
         credentials, session, or headers that application authentication needs
-        for one MCP call. Without it, operations execute as anonymous requests.
+        for one MCP call. Its final argument contains the incoming MCP
+        transport headers. Without it, MCP transport headers are copied into a
+        synthetic Django request automatically.
         """
         self._django_application: Any | None = None
         self._routes: tuple[MCPRoute, ...] = ()
@@ -73,6 +77,19 @@ class MCPHost:
         if isinstance(payload, dict):
             payload = {"status": response.status_code, **payload}
         return ToolError(json.dumps(payload, ensure_ascii=False))
+
+    @staticmethod
+    def _request_headers(context: MCPContext | None) -> Mapping[str, str]:
+        """Return headers from the incoming MCP transport request, if present."""
+        if context is None:
+            return {}
+        try:
+            request = context.request_context.request
+        except ValueError:
+            return {}
+        if request is None:
+            return {}
+        return request.headers
 
     @staticmethod
     def _parse_route(route: str) -> tuple[str, str, dict[str, Any]]:
@@ -118,6 +135,7 @@ class MCPHost:
         path_params: dict[str, Any],
         query_params: dict[str, Any],
         body: Any,
+        request_headers: Mapping[str, str] | None = None,
     ) -> str:
         """Invoke a resolved Ninja operation and serialize its JSON response."""
         source_request = None
@@ -129,9 +147,16 @@ class MCPHost:
                 path_params,
                 query_params,
                 body,
+                request_headers or {},
             )
             if inspect.isawaitable(source_request):
                 source_request = await source_request
+        elif request_headers:
+            source_request = build_request(
+                method,
+                path,
+                headers=request_headers,
+            )
 
         response = await registry.execute_http_request_async(
             operation,
@@ -151,6 +176,7 @@ class MCPHost:
         route: str,
         body: Any,
         api_base_path: str,
+        request_headers: Mapping[str, str] | None = None,
     ) -> str:
         """Validate and resolve an HTTP-style MCP route before execution."""
         method, path, query_params = self._parse_route(route)
@@ -186,6 +212,7 @@ class MCPHost:
             path_params,
             query_params,
             body,
+            request_headers,
         )
 
     def build_server(self, registry: NinjaMCARouter, app_label: str) -> MCPServer:
@@ -201,17 +228,17 @@ class MCPHost:
         @server.tool(
             name=tool_name,
             description=(
-                f"Call the {app_label} API with an HTTP-style route relative to {rest_base_path}. "
+                f"Call the {app_label} API with an HTTP-style route relative to its API mount. "
                 "Start with route='GET /' to discover operations, guides and schemas. "
                 "Pass body for JSON request data. Results are JSON text; "
-                "HTTP 204 responses return null. Direct REST access with "
-                f"HTTP/curl at {rest_base_path} is also possible."
+                "HTTP 204 responses return null. Direct REST access is also possible."
             ),
             structured_output=False,
         )
         async def call_api(
             route: str,
             body: Any = None,
+            context: MCPContext | None = None,
         ) -> str:
             """Handle one MCP tool call using an MCA-relative HTTP route."""
             try:
@@ -221,6 +248,7 @@ class MCPHost:
                     route,
                     body,
                     rest_base_path,
+                    self._request_headers(context),
                 )
             except MCAError as exc:
                 raise ToolError(

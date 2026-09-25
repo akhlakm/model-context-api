@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 import re
 from collections.abc import Iterable, Mapping
 from copy import deepcopy
@@ -19,6 +18,7 @@ from ninja import NinjaAPI, Query, Router, Status
 from .base import BaseMCARouter, MCAError, RegisteredRoute
 from .composition import MCACompositionMixin
 from .models import ErrorOut, MCADiscoveryOut, MCAResponseOut
+from .request import build_request
 from .schema import attach_components, build_request_schema
 
 F = TypeVar("F", bound=Callable[..., Any])
@@ -337,32 +337,14 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         body: Any,
     ) -> HttpRequest:
         """Construct a Django request that mirrors a direct HTTP invocation."""
-        from django.test import RequestFactory
-
         query_string = urlencode(dict(query_params or {}), doseq=True)
         path = _request_path(route.path, path_values)
         if query_string:
             path = f"{path}?{query_string}"
 
-        request_factory = RequestFactory()
-        if body is None:
-            request = request_factory.generic(route.method, path)
-        else:
-            request = request_factory.generic(
-                route.method,
-                path,
-                data=json.dumps(body).encode("utf-8"),
-                content_type="application/json",
-            )
+        request = build_request(route.method, path, body=body)
 
-        if source_request is None:
-            try:
-                from django.contrib.auth.models import AnonymousUser
-            except (ImportError, RuntimeError):
-                request.user = None
-            else:
-                request.user = AnonymousUser()
-        else:
+        if source_request is not None:
             # Transport fields belong to the synthetic request; identity and
             # application context are the only values inherited from the caller.
             self._copy_request_context(request, source_request)

@@ -803,9 +803,11 @@ registered routes.
 
 MCP execution supports both synchronous and asynchronous Ninja operations,
 including asynchronous `get_context` discovery and mounted-router composition.
-Protected operations require an application-provided
-`request_context_factory` on `MCPHost`; without one, calls execute as an
-anonymous request and follow the application's normal authentication rules.
+`MCPHost` copies incoming MCP transport headers into a synthetic Django
+request, so header-based authentication works without application-specific
+ASGI code. Applications that need custom users, sessions, or credential
+translation can provide a `request_context_factory`; its final argument is a
+mapping of headers from the incoming MCP transport request.
 
 Successful results are returned as JSON text. A 204 response is represented as
 null. Invalid routes, validation failures, unknown operations, and endpoint

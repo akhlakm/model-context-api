@@ -14,19 +14,39 @@ and caches the private request and response schemas in one batched RPC request,
 then uses them for generic public body and response schemas while retaining the
 public HTTP route and path/query parameters.
 
-From the repository root, install the Ninja extra if needed and run Django's
-system check:
+From the repository root, install the Ninja and MCP extras if needed and run
+Django's system check:
 
 ```bash
-pip install -e ".[ninja]"
+pip install -e ".[ninja,mcp]"
 PYTHONPATH=. python examples/ninja/manage.py check
 ```
 
-Start the server:
+For the REST API only, start Django's development server:
 
 ```bash
 PYTHONPATH=. python examples/ninja/manage.py runserver
 ```
+
+For the REST API and MCP endpoint together, start the ASGI application:
+
+```bash
+PYTHONPATH=examples/ninja uvicorn demo.asgi:application --reload
+```
+
+The ASGI entry point exposes the public registry through MCP:
+
+```text
+Streamable HTTP endpoint: http://127.0.0.1:8000/api/demo/mcp
+MCP tool name:           demo_api
+REST API base path:      /api
+```
+
+The MCP tool uses routes relative to `/api`, for example
+`demo_api(route="GET /")` for discovery or
+`demo_api(route="GET /invoices/7")` for an operation. Configure the MCP
+client's HTTP transport with `X-Demo-Token: demo-token` for authenticated
+invoice operations. Discovery works without credentials.
 
 Inspect public discovery:
 

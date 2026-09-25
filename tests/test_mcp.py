@@ -1,4 +1,5 @@
 import json
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase
 
 from django.conf import settings
@@ -15,11 +16,36 @@ import django
 django.setup()
 
 from django.test import RequestFactory
+from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from ninja import Router
 
 from mca.mcp import MCPHost
 from mca.ninja import NinjaMCARouter
+
+
+def _authenticated_registry():
+    def authenticate(request):
+        return request.headers.get("X-MCP-Token")
+
+    registry = NinjaMCARouter(Router(auth=authenticate))
+
+    @registry.register("/items", response=dict)
+    def get_items(request):
+        return {"principal": request.auth}
+
+    return registry
+
+
+def _mcp_context(server, token="trusted-principal"):
+    request = RequestFactory().get(
+        "/api/items/mcp",
+        HTTP_X_MCP_TOKEN=token,
+    )
+    return Context(
+        request_context=SimpleNamespace(request=request),
+        mcp_server=server,
+    )
 
 
 class AsyncMCPHostTests(IsolatedAsyncioTestCase):
@@ -122,14 +148,7 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         self.assertEqual(client.calls, [(None, "get_invoice")])
 
     async def test_mcp_request_context_supplies_application_authentication(self):
-        def authenticate(request):
-            return request.headers.get("X-MCP-Token")
-
-        registry = NinjaMCARouter(Router(auth=authenticate))
-
-        @registry.register("/items", response=dict)
-        def get_items(request):
-            return {"principal": request.auth}
+        registry = _authenticated_registry()
 
         unauthenticated_host = MCPHost()
         with self.assertRaises(ToolError):
@@ -141,11 +160,24 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
                 "/api/items",
             )
 
-        def authenticated_context(app_label, method, path, path_params, query_params, body):
+        received_headers = {}
+
+        def authenticated_context(
+            app_label,
+            method,
+            path,
+            path_params,
+            query_params,
+            body,
+            request_headers,
+        ):
+            received_headers.update(request_headers)
             return RequestFactory().generic(
                 method,
                 path,
-                HTTP_X_MCP_TOKEN="trusted-principal",
+                headers={
+                    "X-MCP-Token": request_headers["X-MCP-Token"],
+                },
             )
 
         host = MCPHost(request_context_factory=authenticated_context)
@@ -155,5 +187,48 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
             "GET /items",
             None,
             "/api/items",
+            request_headers={"X-MCP-Token": "trusted-principal"},
         )
         self.assertEqual(json.loads(result), {"principal": "trusted-principal"})
+        self.assertEqual(received_headers, {"X-MCP-Token": "trusted-principal"})
+
+    async def test_mcp_tool_passes_transport_headers_to_request_context_factory(self):
+        registry = _authenticated_registry()
+
+        def authenticated_context(
+            app_label,
+            method,
+            path,
+            path_params,
+            query_params,
+            body,
+            request_headers,
+        ):
+            return RequestFactory().generic(method, path, headers=dict(request_headers))
+
+        host = MCPHost(request_context_factory=authenticated_context)
+        server = host.build_server(registry, "items")
+
+        result = await server.call_tool(
+            "items_api",
+            {"route": "GET /items"},
+            _mcp_context(server),
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.content[0].text, '{"principal": "trusted-principal"}')
+
+    async def test_mcp_tool_forwards_transport_headers_by_default(self):
+        registry = _authenticated_registry()
+
+        host = MCPHost()
+        server = host.build_server(registry, "items")
+
+        result = await server.call_tool(
+            "items_api",
+            {"route": "GET /items"},
+            _mcp_context(server),
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(result.content[0].text, '{"principal": "trusted-principal"}')
