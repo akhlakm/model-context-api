@@ -596,7 +596,6 @@ mca_registry = NinjaMCARouter(
 )
 mcp_host.register(
     mca_registry,
-    "items",
     api_base_path="/api/items",
     description="Public item API.",
 )
@@ -747,7 +746,6 @@ from mca.mcp import mcp_host
 
 mcp_host.register(
     mca_registry,
-    "items",
     api_base_path="/api/items",
     description="Public item API.",
 )
@@ -781,13 +779,11 @@ Each application registers its own router from its `api.py` module. The module
 must be imported during Django startup, normally through the application's URL
 configuration or `AppConfig.ready()`.
 
-Pass the complete REST API mount path from `urls.py` when registering a router.
-The app label is metadata and is not used to guess the URL:
+Pass the complete REST API mount path from `urls.py` when registering a router:
 
 ~~~python
 mcp_host.register(
     mca_registry,
-    "items",
     api_base_path="/api/v2/items",
     description="Public item API.",
 )
@@ -875,7 +871,6 @@ from myapp.api import mca_registry
 host = MCPHost()
 host.register(
     mca_registry,
-    "items",
     api_base_path="/api/items",
     description="Public item API.",
 )

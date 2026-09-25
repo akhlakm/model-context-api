@@ -59,13 +59,11 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
 
         default_registration = host.register(
             registry,
-            "items",
             api_base_path="/api/v2/items",
             description="Public item API.",
         )
         custom_registration = host.register(
             registry,
-            "billing",
             api_base_path="/billing",
             description="Billing API.",
         )
@@ -84,7 +82,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "before host initialization"):
             host.register(
                 registry,
-                "late",
                 api_base_path="/api/v2/late",
                 description="Late API.",
             )
@@ -94,7 +91,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         host = MCPHost()
         host.register(
             registry,
-            "items",
             api_base_path="/api/v2/items",
             description="Items API.",
         )
@@ -102,14 +98,12 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         with self.assertRaisesRegex(RuntimeError, "path"):
             host.register(
                 registry,
-                "other",
                 api_base_path="/api/v2/items",
                 description="Other API.",
             )
         with self.assertRaisesRegex(RuntimeError, "overlaps"):
             host.register(
                 registry,
-                "nested",
                 api_base_path="/api/v2/items/private",
                 description="Nested API.",
             )
@@ -129,13 +123,11 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         host = MCPHost()
         host.register(
             items,
-            "items",
             api_base_path="/api/v2/items",
             description="Item API.",
         )
         host.register(
             billing,
-            "billing",
             api_base_path="/billing",
             description="Billing API.",
         )
@@ -195,7 +187,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         host = MCPHost()
         host.register(
             registry,
-            "items",
             api_base_path="/api/items",
             description="Items API.",
         )
@@ -252,7 +243,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         host = MCPHost()
         host.register(
             registry,
-            "items",
             api_base_path="/api/items",
             description="Items API.",
         )
@@ -282,7 +272,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         unauthenticated_host = MCPHost()
         unauthenticated_host.register(
             registry,
-            "items",
             api_base_path="/api/items",
             description="Items API.",
         )
@@ -295,7 +284,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         received_headers = {}
 
         def authenticated_context(
-            app_label,
             method,
             path,
             path_params,
@@ -315,7 +303,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         host = MCPHost(request_context_factory=authenticated_context)
         host.register(
             registry,
-            "items",
             api_base_path="/api/items",
             description="Items API.",
         )
@@ -331,7 +318,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         registry = _authenticated_registry()
 
         def authenticated_context(
-            app_label,
             method,
             path,
             path_params,
@@ -344,7 +330,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         host = MCPHost(request_context_factory=authenticated_context)
         host.register(
             registry,
-            "items",
             api_base_path="/api/items",
             description="Items API.",
         )
@@ -365,7 +350,6 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         host = MCPHost()
         host.register(
             registry,
-            "items",
             api_base_path="/api/items",
             description="Items API.",
         )

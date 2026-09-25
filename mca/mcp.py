@@ -22,7 +22,7 @@ from .request import build_request
 BODY_METHODS = {"POST", "PUT", "PATCH"}
 MCP_TOOL_NAME = "mc_api"
 RequestContextFactory = Callable[
-    [str, str, str, Mapping[str, Any], Mapping[str, Any], Any, Mapping[str, str]],
+    [str, str, Mapping[str, Any], Mapping[str, Any], Any, Mapping[str, str]],
     HttpRequest | None | Awaitable[HttpRequest | None],
 ]
 
@@ -31,7 +31,6 @@ RequestContextFactory = Callable[
 class MCPRegistration:
     """One MCA router registered with the shared MCP API tool."""
 
-    app_label: str
     api_base_path: str
     description: str
     registry: NinjaMCARouter
@@ -104,7 +103,6 @@ class MCPHost:
     def register(
         self,
         registry: NinjaMCARouter,
-        app_label: str,
         *,
         api_base_path: str,
         description: str,
@@ -126,7 +124,7 @@ class MCPHost:
         if any(self._paths_overlap(base_path, item.api_base_path) for item in self._registrations):
             raise RuntimeError(f"MCA API path '{base_path}' overlaps a registered API path.")
 
-        registration = MCPRegistration(app_label, base_path, description.strip(), registry)
+        registration = MCPRegistration(base_path, description.strip(), registry)
         self._registrations += (registration,)
         return registration
 
@@ -223,7 +221,6 @@ class MCPHost:
     async def _call_operation(
         self,
         registry: NinjaMCARouter,
-        app_label: str,
         operation: str,
         method: str,
         path: str,
@@ -236,7 +233,6 @@ class MCPHost:
         source_request = None
         if self.request_context_factory is not None:
             source_request = self.request_context_factory(
-                app_label,
                 method,
                 path,
                 path_params,
@@ -292,7 +288,6 @@ class MCPHost:
         operation, path_params = resolved
         return await self._call_operation(
             registration.registry,
-            registration.app_label,
             operation,
             method,
             relative_path,

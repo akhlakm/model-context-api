@@ -28,7 +28,6 @@ public_mca = NinjaMCARouter(
 public_mca.mount("billing", billing_rpc)
 mcp_host.register(
     public_mca,
-    "demo",
     api_base_path="/api",
     description="Public invoice and billing API.",
 )
