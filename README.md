@@ -205,9 +205,11 @@ guides can be requested with names such as `invoices/legacy_format.md`.
 
 With guides enabled, the root discovery response returns the registry metadata,
 available guide names, and a map of available operations. It also returns the
-optional help content from `index.md` when it exists. Guide and operation
-details are requested separately. Without guides, the response contains the
-registry metadata, usage instructions, and available operations only:
+optional help content from `index.md` when it exists. Because that content is
+already included in root discovery, `index.md` is omitted from
+`available_guides` but remains readable with `?guide=index.md`. Guide and
+operation details are requested separately. Without guides, the response
+contains the registry metadata, usage instructions, and available operations only:
 
 ~~~http
 GET /                         Root discovery

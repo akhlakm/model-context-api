@@ -62,7 +62,16 @@ class NinjaCompositionExampleTests(TestCase):
             "billing/invoices/legacy_format.md",
             discovery["available_guides"],
         )
+        self.assertNotIn("index.md", discovery["available_guides"])
         self.assertNotIn("billing/index.md", discovery["available_guides"])
+
+        index_guide = public_mca._get_context("index.md", None)
+        self.assertEqual(
+            index_guide["guides"]["index.md"],
+            "# Public Invoice API\n\n"
+            "Start with the public operation discovery document, then read the invoice\n"
+            "guide before requesting an invoice.\n",
+        )
 
         expected_routes = {
             "get_public_invoice": "GET invoices/{invoice_id}",

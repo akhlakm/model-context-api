@@ -75,6 +75,10 @@ class BaseMCARouterTests(TestCase):
             self.assertEqual(discovery["help"], "# MCA")
             self.assertIn("Use GET /?guide={names}", discovery["usage"])
             self.assertEqual(
+                discovery["available_guides"],
+                ["invoices/legacy_format.md", "workflow.md"],
+            )
+            self.assertEqual(
                 discovery["available_operations"]["get_item"],
                 "GET items/{item_id} - Get item",
             )

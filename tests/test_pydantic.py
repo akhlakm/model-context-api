@@ -80,7 +80,7 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertIsInstance(discovery, MCAResponseOut)
         self.assertEqual(discovery.title, "Model Context API")
         self.assertEqual(discovery.version, 1.0)
-        self.assertIn("index.md", discovery.available_guides)
+        self.assertNotIn("index.md", discovery.available_guides)
         details = self.router.dispatch("get_context", params={"operation": "get_item"})
         self.assertEqual(details.operations["get_item"].route, "GET items/{item_id}")
         self.assertNotIn("guides", details.model_dump())
@@ -171,6 +171,7 @@ class PydanticMCARouterPackageTests(TestCase):
         details = self.router.dispatch("get_context", params={"guide": "index.md"})
 
         self.assertEqual(set(details.model_dump()), {"guides"})
+        self.assertEqual(details.guides["index.md"], "# MCA")
 
     def test_invalid_dispatch_raises_structured_error(self):
         with self.assertRaises(MCAError) as context:

@@ -515,7 +515,9 @@ class BaseMCARouter:
                 available_guides = self.guide_catalog.available()
                 if "index.md" in available_guides:
                     result["help"] = self.guide_catalog.read("index.md")["index.md"]
-                result["available_guides"] = available_guides
+                result["available_guides"] = [
+                    name for name in available_guides if name != "index.md"
+                ]
             return result
 
         result: dict[str, Any] = {}
@@ -570,7 +572,9 @@ class BaseMCARouter:
                 available_guides = self.guide_catalog.available()
                 if "index.md" in available_guides:
                     result["help"] = self.guide_catalog.read("index.md")["index.md"]
-                result["available_guides"] = available_guides
+                result["available_guides"] = [
+                    name for name in available_guides if name != "index.md"
+                ]
             return result
 
         result: dict[str, Any] = {}
