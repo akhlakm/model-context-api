@@ -74,14 +74,14 @@ class PydanticMCARouterPackageTests(TestCase):
         self.guides_dir.cleanup()
 
     def test_discovery_and_dispatch_are_framework_independent(self):
-        discovery = self.router.dispatch("get_mca")
+        discovery = self.router.dispatch("get_context")
         result = self.router.dispatch("/items/7", method="GET")
 
         self.assertIsInstance(discovery, MCAResponseOut)
         self.assertEqual(discovery.title, "Model Context API")
         self.assertEqual(discovery.version, 1.0)
         self.assertIn("index.md", discovery.available_guides)
-        details = self.router.dispatch("get_mca", params={"operation": "get_item"})
+        details = self.router.dispatch("get_context", params={"operation": "get_item"})
         self.assertEqual(details.operations["get_item"].route, "GET items/{item_id}")
         self.assertNotIn("guides", details.model_dump())
         self.assertNotIn("operation", details.operations["get_item"].model_dump())
@@ -95,7 +95,7 @@ class PydanticMCARouterPackageTests(TestCase):
             return ItemOut(item_id=1)
 
         route = router.route("get_status")
-        details = router.dispatch("get_mca", params={"operation": "get_status"})
+        details = router.dispatch("get_context", params={"operation": "get_status"})
 
         self.assertIsNone(route.path)
         self.assertEqual(route.discovery_route, "get_status")
@@ -122,7 +122,7 @@ class PydanticMCARouterPackageTests(TestCase):
             version=2.5,
         )
 
-        discovery = router.dispatch("get_mca")
+        discovery = router.dispatch("get_context")
 
         self.assertEqual(discovery.title, "Example API")
         self.assertEqual(discovery.version, 2.5)
@@ -135,14 +135,14 @@ class PydanticMCARouterPackageTests(TestCase):
             """Read guided data."""
             return ItemOut(item_id=1)
 
-        discovery = router.dispatch("get_mca")
-        details = router.dispatch("get_mca", params={"operation": "get_guided"})
+        discovery = router.dispatch("get_context")
+        details = router.dispatch("get_context", params={"operation": "get_guided"})
         self.assertEqual(discovery.help, "Use operation discovery.")
         self.assertNotIn("index", discovery.model_dump())
         self.assertNotIn("available_guides", discovery.model_dump())
         self.assertNotIn("guides", details.operations["get_guided"].model_dump())
         with self.assertRaises(MCAError) as context:
-            router.dispatch("get_mca", params={"guide": "workflow.md"})
+            router.dispatch("get_context", params={"guide": "workflow.md"})
         self.assertEqual(context.exception.code, "unknown_guides")
         self.assertEqual(context.exception.status, 404)
 
@@ -151,7 +151,7 @@ class PydanticMCARouterPackageTests(TestCase):
             Path(directory, "workflow.md").write_text("# Workflow", encoding="utf-8")
             router = PydanticMCARouter(guides_dir=directory)
 
-            discovery = router.dispatch("get_mca")
+            discovery = router.dispatch("get_context")
             payload = discovery.model_dump()
 
             self.assertNotIn("index", payload)
@@ -162,12 +162,12 @@ class PydanticMCARouterPackageTests(TestCase):
         def get_guided() -> ItemOut:
             return ItemOut(item_id=1)
 
-        details = self.router.dispatch("get_mca", params={"operation": "get_guided"})
+        details = self.router.dispatch("get_context", params={"operation": "get_guided"})
 
         self.assertEqual(details.operations["get_guided"].model_dump()["guides"], ["workflow.md"])
 
     def test_discovery_omits_unrequested_content(self):
-        details = self.router.dispatch("get_mca", params={"guide": "index.md"})
+        details = self.router.dispatch("get_context", params={"guide": "index.md"})
 
         self.assertEqual(set(details.model_dump()), {"guides"})
 
@@ -209,7 +209,7 @@ class PydanticMCARouterPackageTests(TestCase):
         client = FakeMCAClient()
         self.router.mount("billing", client)
 
-        discovery = self.router.dispatch("get_mca")
+        discovery = self.router.dispatch("get_context")
         self.assertNotIn("billing.get_invoice", discovery.available_operations)
         self.assertNotIn("billing/index.md", discovery.available_guides)
 
@@ -224,9 +224,9 @@ class PydanticMCARouterPackageTests(TestCase):
             )
             return ItemOut(item_id=result["invoice_id"])
 
-        discovery = self.router.dispatch("get_mca")
+        discovery = self.router.dispatch("get_context")
         details = self.router.dispatch(
-            "get_mca",
+            "get_context",
             params={"operation": "get_public_invoice"},
         )
         result = self.router.dispatch(
@@ -257,7 +257,7 @@ class PydanticMCARouterPackageTests(TestCase):
 
         with self.assertRaises(MCAError) as context:
             self.router.dispatch(
-                "get_mca",
+                "get_context",
                 params={"operation": "billing.get_invoice"},
             )
         self.assertEqual(context.exception.code, "unknown_operation")
@@ -265,7 +265,7 @@ class PydanticMCARouterPackageTests(TestCase):
 
         with self.assertRaises(MCAError) as context:
             self.router.dispatch(
-                "get_mca",
+                "get_context",
                 params={"guide": "billing/index.md"},
             )
         self.assertEqual(context.exception.code, "unknown_guides")
@@ -339,7 +339,7 @@ class PydanticMCARouterPackageTests(TestCase):
             return ItemOut(**client.call("make_invoice", data=data.model_dump()))
 
         details = router.dispatch(
-            "get_mca",
+            "get_context",
             params={"operation": "make_invoice"},
         )
         schema = details.operations["make_invoice"].model_dump()
@@ -359,7 +359,7 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertEqual(client.discovery_calls.count((None, "make_invoice")), 1)
 
         typed_details = router.dispatch(
-            "get_mca",
+            "get_context",
             params={"operation": "make_typed_invoice"},
         )
         typed_schema = typed_details.operations["make_typed_invoice"].model_dump()
@@ -436,14 +436,14 @@ class PydanticMCARouterPackageTests(TestCase):
         def get_public_other() -> dict[str, Any]:
             return {}
 
-        router.dispatch("get_mca")
-        router.dispatch("get_mca")
+        router.dispatch("get_context")
+        router.dispatch("get_context")
 
         self.assertEqual(billing.discovery_calls, [(None, "get_first,get_second")])
         self.assertEqual(inventory.discovery_calls, [(None, "get_other")])
 
         router.clear_remote_schema_cache()
-        router.dispatch("get_mca", params={"operation": "get_public_first"})
+        router.dispatch("get_context", params={"operation": "get_public_first"})
 
         self.assertEqual(
             billing.discovery_calls,
@@ -469,7 +469,7 @@ class PydanticMCARouterPackageTests(TestCase):
             ))
 
         details = self.router.dispatch(
-            "get_mca",
+            "get_context",
             params={
                 "guide": "workflow.md,billing/invoices.md",
                 "operation": "get_item,get_public_invoice",
@@ -544,7 +544,7 @@ class PydanticMCARouterPackageTests(TestCase):
             return ItemOut(item_id=1)
 
         with self.assertRaises(MCAError) as context:
-            failing_router.dispatch("get_mca")
+            failing_router.dispatch("get_context")
 
         self.assertEqual(context.exception.code, "upstream_unavailable")
         self.assertEqual(context.exception.field, "service")
@@ -578,7 +578,7 @@ class AsyncPydanticMCARouterTests(IsolatedAsyncioTestCase):
             return {}
 
         with self.assertRaises(MCAError) as context:
-            router.dispatch("get_mca", params={"operation": "get_public_invoice"})
+            router.dispatch("get_context", params={"operation": "get_public_invoice"})
 
         self.assertEqual(context.exception.code, "sync_client_required")
         self.assertEqual(context.exception.status, 500)
@@ -636,7 +636,7 @@ class AsyncPydanticMCARouterTests(IsolatedAsyncioTestCase):
             return {}
 
         details = await router.adispatch(
-            "get_mca",
+            "get_context",
             params={"operation": "get_public_invoice"},
         )
 
@@ -649,7 +649,7 @@ class AsyncPydanticMCARouterTests(IsolatedAsyncioTestCase):
         self.assertEqual(client.async_calls, [(None, "get_invoice")])
 
         guide_details = await router.adispatch(
-            "get_mca",
+            "get_context",
             params={"guide": "billing/invoices.md"},
         )
         self.assertEqual(

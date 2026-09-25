@@ -506,7 +506,7 @@ class BaseMCARouter:
                             f"{route.discovery_route} - {route.description}",
                         )
                         for route in self._routes.values()
-                        if route.operation != "get_mca"
+                        if route.operation != "get_context"
                         and route.meta("include_in_discovery", True)
                     )
                 ),
@@ -561,7 +561,7 @@ class BaseMCARouter:
                             f"{route.discovery_route} - {route.description}",
                         )
                         for route in self._routes.values()
-                        if route.operation != "get_mca"
+                        if route.operation != "get_context"
                         and route.meta("include_in_discovery", True)
                     )
                 ),

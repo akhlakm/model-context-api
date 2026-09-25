@@ -94,15 +94,15 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
 
     def _discovery_endpoints(self) -> Iterable[tuple[str, str, F, Mapping[str, Any]]]:
         """Define the Pydantic discovery operation used by the base router."""
-        def get_mca(params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
+        def get_context(params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
             """Return the discovery response selected by the query parameters."""
-            return self._get_mca(params)
+            return self._get_context(params)
 
         return (
             (
                 self.mca_path,
-                "get_mca",
-                get_mca,
+                "get_context",
+                get_context,
                 {"description": "Discover engine guides and read operation schemas."},
             ),
         )
@@ -280,7 +280,7 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
         )
         return APIRouteSchemaOut.model_validate(composed)
 
-    def _get_mca(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
+    def _get_context(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
         """Serve root, guide, or operation discovery through the typed adapter."""
         result = self._composed_discovery(
             params.guide,
@@ -294,7 +294,7 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
         )
         return response_model(**result)
 
-    async def _aget_mca(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
+    async def _aget_context(self, params: DiscoveryParams) -> MCAResponseOut | MCADiscoveryOut:
         """Serve discovery asynchronously, including mounted MCA calls."""
         result = await self._composed_discovery_async(
             params.guide,
@@ -357,8 +357,8 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
     ) -> Any:
         """Validate, await, and validate one typed async operation."""
         kwargs, validated_params = self._dispatch_arguments(route, params, data)
-        if route.operation == "get_mca":
-            result = await self._aget_mca(validated_params)
+        if route.operation == "get_context":
+            result = await self._aget_context(validated_params)
         else:
             result = route.endpoint(**kwargs)
             if inspect.isawaitable(result):

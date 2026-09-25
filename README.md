@@ -102,7 +102,7 @@ guides. The registry does not store application data and does not decide
 whether a user is authenticated; the endpoint implementation and host
 application still own those responsibilities.
 
-Every registry includes a discovery operation named get_mca. With the default
+Every registry includes a discovery operation named get_context. With the default
 mca_path="/", it is exposed as GET / relative to the API mount. Discovery is
 deliberately separate from ordinary business operations so a client can learn
 how to use an API before attempting a mutation.
@@ -379,11 +379,11 @@ Dispatch by operation name or by an HTTP method and route path:
 
 ~~~python
 # Root discovery.
-discovery = router.dispatch("get_mca")
+discovery = router.dispatch("get_context")
 
 # Read guides and an operation schema.
-guides = router.dispatch("get_mca", params={"guide": "items.md"})
-schema = router.dispatch("get_mca", params={"operation": "get_item"})
+guides = router.dispatch("get_context", params={"guide": "items.md"})
+schema = router.dispatch("get_context", params={"operation": "get_item"})
 
 # Dispatch a typed operation.
 created = router.dispatch(
@@ -436,7 +436,7 @@ client can use JSON-RPC, HTTP, or another transport; it only needs to provide
 endpoints and may invoke the underlying RPC or transport directly.
 
 When discovery needs schemas for multiple delegated operations, the public
-router batches the missing operation names into one `get_mca` request per
+router batches the missing operation names into one `get_context` request per
 mounted service and caches each returned schema. Guide content is requested
 separately only when that guide is explicitly requested. Synchronous discovery
 uses `discover()`; async discovery uses `await adiscover()`. A client that only
@@ -455,7 +455,7 @@ class JsonRpcMCAClient:
 
     def discover(self, *, guide=None, operation=None):
         return self.call(
-            "get_mca",
+            "get_context",
             params={"guide": guide, "operation": operation},
         )
 
@@ -467,7 +467,7 @@ class JsonRpcMCAClient:
 
     async def adiscover(self, *, guide=None, operation=None):
         return await self.acall(
-            "get_mca",
+            "get_context",
             params={"guide": guide, "operation": operation},
         )
 
@@ -710,12 +710,12 @@ Both synchronous methods reject asynchronous Ninja endpoints. Use
 
 ~~~python
 response = await mca_registry.execute_http_async(
-    "get_mca",
+    "get_context",
     request,
 )
 ~~~
 
-The public Ninja `get_mca` endpoint is async-aware and awaits mounted
+The public Ninja `get_context` endpoint is async-aware and awaits mounted
 `adiscover()` calls. Operation handlers are responsible for invoking their
 underlying RPC or transport directly; `call()` and `acall()` helpers are
 optional client conveniences.

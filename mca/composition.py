@@ -30,7 +30,7 @@ class MCAClient(Protocol):
         guide: str | None = None,
         operation: str | None = None,
     ) -> Any:
-        """Return a remote ``get_mca`` response as a model or JSON-like value.
+        """Return a remote ``get_context`` response as a model or JSON-like value.
 
         ``guide`` and ``operation`` may contain comma-separated names when the
         transport supports batched discovery.
@@ -45,7 +45,7 @@ class MCAClient(Protocol):
         guide: str | None = None,
         operation: str | None = None,
     ) -> Any:
-        """Asynchronously return a remote ``get_mca`` response.
+        """Asynchronously return a remote ``get_context`` response.
 
         This is the async counterpart to :meth:`discover`. The values use the
         same batched guide and operation format.
@@ -163,7 +163,7 @@ class MCACompositionMixin:
         return tuple(
             route
             for route in self._routes.values()
-            if route.operation != "get_mca"
+            if route.operation != "get_context"
             and route.meta("include_in_discovery", True)
             and route.meta("delegate_to") is not None
         )

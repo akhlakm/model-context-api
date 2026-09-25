@@ -226,7 +226,7 @@ class NinjaMCARouterPackageTests(TestCase):
             Path(directory, "workflow.md").write_text("# Workflow", encoding="utf-8")
             router = NinjaMCARouter(FakeAPI(), guides_dir=directory)
 
-            discovery = router._get_mca(None, None)
+            discovery = router._get_context(None, None)
 
             self.assertNotIn("index", discovery)
             self.assertEqual(discovery["available_guides"], ["workflow.md"])
@@ -306,17 +306,17 @@ class NinjaMCARouterPackageTests(TestCase):
             "integer",
         )
 
-        root = router._get_mca(None, None)
+        root = router._get_context(None, None)
         self.assertEqual(set(root["available_operations"]), {"get_invoice"})
         self.assertEqual(root["available_guides"], ["billing/invoices.md"])
         self.assertNotIn("billing.get_invoice", root["available_operations"])
 
-        details = router._get_mca("billing/invoices.md", None)
+        details = router._get_context("billing/invoices.md", None)
         self.assertEqual(details["guides"], {"billing/invoices.md": "# invoices"})
-        operation_details = router._get_mca(None, "get_invoice")
+        operation_details = router._get_context(None, "get_invoice")
         self.assertIn("get_invoice", operation_details["operations"])
         with self.assertRaisesRegex(MCAError, "Unavailable operation"):
-            router._get_mca(None, "billing.get_invoice")
+            router._get_context(None, "billing.get_invoice")
 
     def test_delegated_schema_composes_remote_body_and_response_and_caches(self):
         class SchemaClient(FakeMCAClient):
@@ -462,7 +462,7 @@ class NinjaMCARouterPackageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content), {"invoice_id": 7})
-        discovery = registry._get_mca(None, None)
+        discovery = registry._get_context(None, None)
         self.assertIn("get_invoice", discovery["available_operations"])
         self.assertEqual(events, ["auth", ("handler", "principal")])
         self.assertEqual(client.calls, [("get_invoice", {"invoice_id": 7}, None)])
@@ -526,7 +526,7 @@ class NinjaMCARouterPackageTests(TestCase):
         def get_hidden(request):
             return {}
 
-        root = router._get_mca(None, None)
+        root = router._get_context(None, None)
         self.assertNotIn("get_hidden", root["available_operations"])
         self.assertEqual(root["available_guides"], ["billing/invoices.md"])
 
@@ -544,7 +544,7 @@ class NinjaMCARouterPackageTests(TestCase):
             return {"invoice_id": invoice_id}
 
         with self.assertRaises(MCAError) as context:
-            router._get_mca(None, None)
+            router._get_context(None, None)
         self.assertEqual(context.exception.code, "upstream_unavailable")
         self.assertEqual(context.exception.status, 502)
 
@@ -577,7 +577,7 @@ class AsyncNinjaMCARouterTests(IsolatedAsyncioTestCase):
             return {"invoice_id": invoice_id}
 
         response = await registry.execute_http_async(
-            "get_mca",
+            "get_context",
             RequestFactory().get("/"),
         )
 
@@ -629,7 +629,7 @@ class AsyncNinjaMCARouterTests(IsolatedAsyncioTestCase):
             return {"invoice_id": invoice_id}
 
         response = await registry.execute_http_async(
-            "get_mca",
+            "get_context",
             RequestFactory().get("/"),
         )
 
@@ -652,7 +652,7 @@ class AsyncNinjaMCARouterTests(IsolatedAsyncioTestCase):
             return {"invoice_id": invoice_id}
 
         response = await registry.execute_http_async(
-            "get_mca",
+            "get_context",
             RequestFactory().get("/"),
         )
 

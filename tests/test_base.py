@@ -12,10 +12,10 @@ class FakeMCARouter(BaseMCARouter):
         super().__init__(guides_dir=guides_dir, **options)
 
     def _discovery_endpoints(self):
-        def get_mca():
+        def get_context():
             return self.discovery(None, None, lambda route: route.relative_route)
 
-        return (("/", "get_mca", get_mca, {}),)
+        return (("/", "get_context", get_context, {}),)
 
     def _register_transport_route(
         self,
@@ -70,7 +70,7 @@ class BaseMCARouterTests(TestCase):
                 router.guide_catalog.read("invoices/legacy_format.md")["invoices/legacy_format.md"],
                 "# Legacy invoices",
             )
-            self.assertEqual(router.route("get_mca").discovery_route, "GET .")
+            self.assertEqual(router.route("get_context").discovery_route, "GET .")
             discovery = router.discovery(None, None, lambda route: route.relative_route)
             self.assertEqual(
                 discovery["available_operations"]["get_item"],
@@ -79,7 +79,7 @@ class BaseMCARouterTests(TestCase):
             self.assertEqual(
                 router.public_routes(),
                 (
-                    ("get_mca", "GET /"),
+                    ("get_context", "GET /"),
                     ("get_item", "GET /items/{item_id}"),
                 ),
             )

@@ -35,7 +35,7 @@ class NinjaCompositionExampleTests(TestCase):
         public_mca.clear_remote_schema_cache()
 
     def test_public_discovery_exposes_only_explicit_public_operation(self):
-        discovery = public_mca._get_mca(None, None)
+        discovery = public_mca._get_context(None, None)
 
         self.assertEqual(
             set(discovery["available_operations"]),
@@ -60,7 +60,7 @@ class NinjaCompositionExampleTests(TestCase):
             "update_public_invoice": "PATCH invoices/{invoice_id}",
             "remove_public_invoice": "DELETE invoices/{invoice_id}",
         }
-        details = public_mca._get_mca(None, ",".join(expected_routes))
+        details = public_mca._get_context(None, ",".join(expected_routes))
         self.assertEqual(
             {
                 name: schema["route"]
@@ -69,7 +69,7 @@ class NinjaCompositionExampleTests(TestCase):
             expected_routes,
         )
 
-        nested_guide = public_mca._get_mca(
+        nested_guide = public_mca._get_context(
             "billing/invoices/legacy_format.md",
             None,
         )
@@ -80,11 +80,11 @@ class NinjaCompositionExampleTests(TestCase):
         )
 
     def test_public_discovery_composes_private_schemas_and_caches_them(self):
-        details = public_mca._get_mca(
+        details = public_mca._get_context(
             None,
             "make_public_invoice,update_public_invoice",
         )
-        repeated = public_mca._get_mca(
+        repeated = public_mca._get_context(
             None,
             "make_public_invoice,update_public_invoice",
         )
@@ -157,7 +157,7 @@ class NinjaCompositionExampleTests(TestCase):
         )
         self.assertNotIn("delegate_to", create_schema)
         self.assertEqual(
-            [call["operation"] for call in billing_rpc.calls if call["method"] == "get_mca"],
+            [call["operation"] for call in billing_rpc.calls if call["method"] == "get_context"],
             ["get_invoice,make_invoice,remove_invoice,update_invoice"],
         )
 
@@ -212,7 +212,7 @@ class NinjaCompositionExampleTests(TestCase):
         self.assertIn("make_public_invoice", response.json()["available_operations"])
         self.assertEqual(
             [call["method"] for call in billing_rpc.calls],
-            ["get_mca"],
+            ["get_context"],
         )
 
     def test_public_write_operations_delegate_with_params_and_body(self):
@@ -300,7 +300,7 @@ class NinjaCompositionExampleAsyncTests(IsolatedAsyncioTestCase):
         self.assertEqual(
             billing_rpc.calls,
             [
-                {"method": "get_mca", "guide": None, "operation": "make_invoice"},
+                {"method": "get_context", "guide": None, "operation": "make_invoice"},
                 {
                     "method": "make_invoice",
                     "params": None,

@@ -94,7 +94,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             200: MCAResponseOut | MCADiscoveryOut,
         }
 
-        async def get_mca(
+        async def get_context(
             request: HttpRequest,
             guide: str | None = Query(None, description="Comma-separated names of Markdown guides to read."),
             operation_name: str | None = Query(
@@ -105,7 +105,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         ):
             """Return discovery data or a Ninja-formatted MCA error response."""
             try:
-                return await self._aget_mca(guide, operation_name)
+                return await self._aget_context(guide, operation_name)
             except MCAError as exc:
                 return Status(
                     exc.status,
@@ -115,8 +115,8 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         return (
             (
                 self.mca_path,
-                "get_mca",
-                get_mca,
+                "get_context",
+                get_context,
                 {"response": response, "description": "Discover API guides and read route schemas."},
             ),
         )
@@ -346,11 +346,11 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             f"Ninja has no bound operation for '{operation}'.",
         )
 
-    def _get_mca(self, guide: str | None, operation_name: str | None):
+    def _get_context(self, guide: str | None, operation_name: str | None):
         """Serve composed discovery through the Ninja adapter."""
         return self._composed_discovery(guide, operation_name, self._route_schema)
 
-    async def _aget_mca(self, guide: str | None, operation_name: str | None):
+    async def _aget_context(self, guide: str | None, operation_name: str | None):
         """Serve composed discovery asynchronously through the Ninja adapter."""
         return await self._composed_discovery_async(
             guide,
