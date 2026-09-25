@@ -25,6 +25,7 @@ public_mca = NinjaMCARouter(
     usage="Discover public operations and guides before requesting an invoice.",
 )
 public_mca.mount("billing", billing_rpc)
+mca_registry = public_mca
 
 
 def demo_auth(request: HttpRequest) -> dict[str, Any] | None:

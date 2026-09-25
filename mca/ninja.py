@@ -270,13 +270,44 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             allow_anonymous=allow_anonymous,
         )
 
+    async def execute_http_request_async(
+        self,
+        operation: str,
+        source_request: HttpRequest | None = None,
+        path_params: Mapping[str, Any] | None = None,
+        query_params: Mapping[str, Any] | None = None,
+        body: Any = None,
+        *,
+        allow_anonymous: bool = False,
+    ) -> HttpResponseBase:
+        """Build and asynchronously execute a Ninja request from JSON values.
+
+        This mirrors :meth:`execute_http_request` while supporting both
+        synchronous and asynchronous registered endpoints.
+        """
+        route = self.route(operation)
+        path_values = dict(path_params or {})
+        request = self._build_execution_request(
+            route,
+            source_request,
+            path_values,
+            query_params,
+            body,
+        )
+        return await self.execute_http_async(
+            operation,
+            request,
+            path_values,
+            allow_anonymous=allow_anonymous,
+        )
+
     @staticmethod
     def _copy_request_context(
         request: HttpRequest,
         source_request: HttpRequest,
     ) -> None:
         """Copy caller identity and safe request context to a synthetic request."""
-        request.user = source_request.user
+        request.user = getattr(source_request, "user", None)
         request.COOKIES = source_request.COOKIES.copy()
         if hasattr(source_request, "session"):
             request.session = source_request.session
@@ -306,7 +337,6 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         body: Any,
     ) -> HttpRequest:
         """Construct a Django request that mirrors a direct HTTP invocation."""
-        from django.contrib.auth.models import AnonymousUser
         from django.test import RequestFactory
 
         query_string = urlencode(dict(query_params or {}), doseq=True)
@@ -326,7 +356,12 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             )
 
         if source_request is None:
-            request.user = AnonymousUser()
+            try:
+                from django.contrib.auth.models import AnonymousUser
+            except (ImportError, RuntimeError):
+                request.user = None
+            else:
+                request.user = AnonymousUser()
         else:
             # Transport fields belong to the synthetic request; identity and
             # application context are the only values inherited from the caller.

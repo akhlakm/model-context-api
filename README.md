@@ -801,6 +801,12 @@ slash, parses query strings, preserves repeated query parameters, accepts JSON
 bodies only for POST, PUT, and PATCH, and resolves path parameters against the
 registered routes.
 
+MCP execution supports both synchronous and asynchronous Ninja operations,
+including asynchronous `get_context` discovery and mounted-router composition.
+Protected operations require an application-provided
+`request_context_factory` on `MCPHost`; without one, calls execute as an
+anonymous request and follow the application's normal authentication rules.
+
 Successful results are returned as JSON text. A 204 response is represented as
 null. Invalid routes, validation failures, unknown operations, and endpoint
 errors are returned as MCP tool errors containing the MCA error code, detail,

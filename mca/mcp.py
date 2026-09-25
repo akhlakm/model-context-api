@@ -2,19 +2,26 @@
 
 from __future__ import annotations
 
+import inspect
 import json
+from collections.abc import Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
+from django.http import HttpRequest
 from mcp.server import MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .base import MCAError
-from .ninja import NinjaMCARouter
+from .ninja import MCAExecutionError, NinjaMCARouter
 
 BODY_METHODS = {"POST", "PUT", "PATCH"}
+RequestContextFactory = Callable[
+    [str, str, str, Mapping[str, Any], Mapping[str, Any], Any],
+    HttpRequest | None | Awaitable[HttpRequest | None],
+]
 
 
 @dataclass(frozen=True)
@@ -35,10 +42,16 @@ class MCPHost:
     MCP application and all other traffic to Django.
     """
 
-    def __init__(self):
-        """Create an uninitialized host; Django and app routes load on first use."""
+    def __init__(self, request_context_factory: RequestContextFactory | None = None):
+        """Create an uninitialized host; Django and app routes load on first use.
+
+        ``request_context_factory`` may return a request carrying the user,
+        credentials, session, or headers that application authentication needs
+        for one MCP call. Without it, operations execute as anonymous requests.
+        """
         self._django_application: Any | None = None
         self._routes: tuple[MCPRoute, ...] = ()
+        self.request_context_factory = request_context_factory
 
     @staticmethod
     def _json_response(response: Any) -> Any:
@@ -95,29 +108,46 @@ class MCPHost:
         }
         return method, path, query_params
 
-    def _call_operation(
+    async def _call_operation(
         self,
         registry: NinjaMCARouter,
+        app_label: str,
         operation: str,
+        method: str,
+        path: str,
         path_params: dict[str, Any],
         query_params: dict[str, Any],
         body: Any,
     ) -> str:
         """Invoke a resolved Ninja operation and serialize its JSON response."""
-        response = registry.execute_http_request(
+        source_request = None
+        if self.request_context_factory is not None:
+            source_request = self.request_context_factory(
+                app_label,
+                method,
+                path,
+                path_params,
+                query_params,
+                body,
+            )
+            if inspect.isawaitable(source_request):
+                source_request = await source_request
+
+        response = await registry.execute_http_request_async(
             operation,
+            source_request=source_request,
             path_params=path_params,
             query_params=query_params,
             body=body,
-            allow_anonymous=True,
         )
         if response.status_code >= 400:
             raise self._tool_error(response)
         return json.dumps(self._json_response(response), ensure_ascii=False)
 
-    def _call_route(
+    async def _call_route(
         self,
         registry: NinjaMCARouter,
+        app_label: str,
         route: str,
         body: Any,
         api_base_path: str,
@@ -147,7 +177,16 @@ class MCPHost:
             )
 
         operation, path_params = resolved
-        return self._call_operation(registry, operation, path_params, query_params, body)
+        return await self._call_operation(
+            registry,
+            app_label,
+            operation,
+            method,
+            path,
+            path_params,
+            query_params,
+            body,
+        )
 
     def build_server(self, registry: NinjaMCARouter, app_label: str) -> MCPServer:
         """Build the MCP server and tool for one Django app's MCA registry.
@@ -170,13 +209,19 @@ class MCPHost:
             ),
             structured_output=False,
         )
-        def call_api(
+        async def call_api(
             route: str,
             body: Any = None,
         ) -> str:
             """Handle one MCP tool call using an MCA-relative HTTP route."""
             try:
-                return self._call_route(registry, route, body, rest_base_path)
+                return await self._call_route(
+                    registry,
+                    app_label,
+                    route,
+                    body,
+                    rest_base_path,
+                )
             except MCAError as exc:
                 raise ToolError(
                     json.dumps(
@@ -185,6 +230,18 @@ class MCPHost:
                             "detail": exc.detail,
                             "field": exc.field,
                             "status": exc.status,
+                        },
+                        ensure_ascii=False,
+                    )
+                ) from exc
+            except MCAExecutionError as exc:
+                raise ToolError(
+                    json.dumps(
+                        {
+                            "code": "execution_error",
+                            "detail": exc.detail,
+                            "field": "operation",
+                            "status": 500,
                         },
                         ensure_ascii=False,
                     )
