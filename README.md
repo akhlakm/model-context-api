@@ -432,16 +432,16 @@ when methods have different request or response models.
 The same explicit composition pattern applies to both adapters. A public
 router can mount private MCA services through a small client adapter. The
 client can use JSON-RPC, HTTP, or another transport; it only needs to provide
-either the synchronous pair `discover()`/`call()`, the asynchronous pair
-`adiscover()`/`acall()`, or both.
+`discover()`, `adiscover()`, or both. Operation calls are owned by the public
+endpoints and may invoke the underlying RPC or transport directly.
 
 When discovery needs schemas for multiple delegated operations, the public
 router batches the missing operation names into one `get_mca` request per
 mounted service and caches each returned schema. Guide content is requested
 separately only when that guide is explicitly requested. Synchronous discovery
-uses `discover()`; async discovery uses `await adiscover()` and requires the
-mounted client to provide the async pair. An async-only client can be mounted
-when the public application uses the async discovery and operation paths.
+uses `discover()`; async discovery uses `await adiscover()`. A client that only
+supports one discovery mode can still be mounted, but the corresponding
+discovery path is unavailable.
 
 #### PydanticMCARouter
 
@@ -716,8 +716,9 @@ response = await mca_registry.execute_http_async(
 ~~~
 
 The public Ninja `get_mca` endpoint is async-aware and awaits mounted
-`adiscover()` calls. Existing synchronous operation handlers continue using
-`call()`; async handlers should explicitly await `acall()`.
+`adiscover()` calls. Operation handlers are responsible for invoking their
+underlying RPC or transport directly; `call()` and `acall()` helpers are
+optional client conveniences.
 
 ## MCP hosting
 

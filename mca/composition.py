@@ -19,8 +19,9 @@ class MCAClient(Protocol):
     """Client boundary used by a public router to reach a private MCA service.
 
     Implementations may use HTTP, JSON-RPC, a message bus, or an in-process
-    adapter. Synchronous composition uses ``discover`` and ``call``; async
-    handlers can use their ``adiscover`` and ``acall`` counterparts.
+    adapter. The composition layer uses ``discover`` and ``adiscover`` only
+    for remote discovery. Public operation handlers invoke their own RPC or
+    transport methods directly.
     """
 
     def discover(
@@ -38,23 +39,6 @@ class MCAClient(Protocol):
             MCAError: When the mounted service reports a discovery failure.
         """
 
-    def call(
-        self,
-        operation: str,
-        *,
-        params: Mapping[str, Any] | None = None,
-        data: Any = None,
-    ) -> Any:
-        """Call a remote operation and return its JSON-compatible result.
-
-        ``params`` carries path/query-style values and ``data`` carries the
-        operation body. The composition layer does not prescribe the RPC wire
-        format.
-
-        Raises:
-            MCAError: When the mounted service reports an operation failure.
-        """
-
     async def adiscover(
         self,
         *,
@@ -68,22 +52,6 @@ class MCAClient(Protocol):
 
         Raises:
             MCAError: When the mounted service reports a discovery failure.
-        """
-
-    async def acall(
-        self,
-        operation: str,
-        *,
-        params: Mapping[str, Any] | None = None,
-        data: Any = None,
-    ) -> Any:
-        """Asynchronously call a remote operation.
-
-        This is the async counterpart to :meth:`call`; transports should
-        await their underlying network or RPC request here.
-
-        Raises:
-            MCAError: When the mounted service reports an operation failure.
         """
 
 
@@ -109,8 +77,9 @@ class MCACompositionMixin:
         ``namespace`` becomes the first segment of every ``delegate_to``
         target. Mounting alone does not expose or merge any private operation.
 
-        The client must provide either the synchronous pair ``discover`` and
-        ``call``, the asynchronous pair ``adiscover`` and ``acall``, or both.
+        The client must provide ``discover()``, ``adiscover()``, or both.
+        Operation calls are owned by the public endpoint and are not part of
+        the mounted-client requirement.
         """
         if not isinstance(namespace, str) or self._namespace_pattern.fullmatch(namespace) is None:
             raise ValueError(
@@ -123,22 +92,10 @@ class MCACompositionMixin:
             for route in self._routes.values()
         ):
             raise ValueError(f"MCA namespace {namespace!r} conflicts with a public operation.")
-        sync_methods = (
-            callable(getattr(client, "discover", None)),
-            callable(getattr(client, "call", None)),
-        )
-        async_methods = (
-            callable(getattr(client, "adiscover", None)),
-            callable(getattr(client, "acall", None)),
-        )
-        if any(sync_methods) and not all(sync_methods):
-            raise TypeError("MCA client must provide both discover() and call() methods.")
-        if any(async_methods) and not all(async_methods):
-            raise TypeError("MCA client must provide both adiscover() and acall() methods.")
-        if not all(sync_methods) and not all(async_methods):
-            raise TypeError(
-                "MCA client must provide discover()/call() or adiscover()/acall() methods."
-            )
+        has_discover = callable(getattr(client, "discover", None))
+        has_adiscover = callable(getattr(client, "adiscover", None))
+        if not has_discover and not has_adiscover:
+            raise TypeError("MCA client must provide discover() or adiscover().")
         self._mounted_mcas[namespace] = client
 
     def clear_remote_schema_cache(

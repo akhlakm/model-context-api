@@ -74,8 +74,9 @@ demo token authenticates successfully but is denied by the write/delete ACL.
 
 The public discovery endpoint uses the async RPC path, so it awaits
 `billing_rpc.adiscover()` before merging private schemas and guides. Async
-application handlers can likewise call `await billing_rpc.acall(...)` for
-private operations.
+application handlers may invoke `await billing_rpc.acall(...)` for private
+operations, but operation-call helpers are not required by the mounted MCA
+client contract.
 
 ```bash
 curl -i -H 'X-Demo-Token: limited-token' \

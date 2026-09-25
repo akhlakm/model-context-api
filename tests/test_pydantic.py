@@ -527,8 +527,10 @@ class PydanticMCARouterPackageTests(TestCase):
             def discover(self, **kwargs):
                 return {}
 
-        with self.assertRaisesRegex(TypeError, r"both discover\(\) and call\(\)"):
-            self.router.mount("partial", PartialClient())
+        self.router.mount("partial", PartialClient())
+
+        with self.assertRaisesRegex(TypeError, r"discover\(\) or adiscover\(\)"):
+            self.router.mount("missing", object())
 
         failing_router = PydanticMCARouter()
 
@@ -564,9 +566,6 @@ class AsyncPydanticMCARouterTests(IsolatedAsyncioTestCase):
                         }
                     }
                 }
-
-            async def acall(self, operation, *, params=None, data=None):
-                return {}
 
         router = PydanticMCARouter()
         router.mount("billing", AsyncOnlyClient())

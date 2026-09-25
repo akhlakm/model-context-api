@@ -565,9 +565,6 @@ class AsyncNinjaMCARouterTests(IsolatedAsyncioTestCase):
                     }
                 }
 
-            async def acall(self, operation, *, params=None, data=None):
-                return {"invoice_id": params["invoice_id"]}
-
         registry = NinjaMCARouter(Router())
         registry.mount("billing", AsyncOnlyClient())
 
