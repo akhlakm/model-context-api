@@ -6,7 +6,7 @@ import inspect
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -25,6 +25,7 @@ RequestContextFactory = Callable[
     [str, str, Mapping[str, Any], Mapping[str, Any], Any, Mapping[str, str]],
     HttpRequest | None | Awaitable[HttpRequest | None],
 ]
+MCPAuthCallback = Callable[[HttpRequest], Any]
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class MCPRegistration:
     api_base_path: str
     description: str
     registry: NinjaMCARouter
+    auth: MCPAuthCallback | None = None
 
 
 class MCPHost:
@@ -60,6 +62,7 @@ class MCPHost:
         self._mcp_application: Any | None = None
         self._registrations: tuple[MCPRegistration, ...] = ()
         self.request_context_factory = request_context_factory
+        self._mcp_auth: MCPAuthCallback | None = None
         self._mcp_path = self._normalize_path("/mcp")
         self._description_prefix = ""
 
@@ -67,14 +70,27 @@ class MCPHost:
         self,
         mount_path: str = "/mcp",
         description_prefix: str = "",
+        *,
+        auth: MCPAuthCallback | None = None,
     ) -> None:
-        """Configure the shared MCP endpoint and tool context before initialization."""
+        """Configure the MCP endpoint, optional shared auth, and tool context.
+
+        ``auth`` is passed to each registered Ninja operation only during MCP
+        execution. It may be synchronous or asynchronous and receives the
+        final synthetic Django request used by the operation.
+        """
         if not isinstance(description_prefix, str):
             raise ValueError("MCP tool description prefix must be a string.")
+        if auth is not None and not callable(auth):
+            raise TypeError("MCP auth must be callable or None.")
         if self._django_application is not None or self._mcp_server is not None:
             raise RuntimeError("MCP host must be configured before initialization.")
         self._mcp_path = self._normalize_path(mount_path)
         self._description_prefix = description_prefix.strip()
+        self._mcp_auth = auth
+        self._registrations = tuple(
+            replace(registration, auth=auth) for registration in self._registrations
+        )
 
     @staticmethod
     def _normalize_path(path: str) -> str:
@@ -124,7 +140,12 @@ class MCPHost:
         if any(self._paths_overlap(base_path, item.api_base_path) for item in self._registrations):
             raise RuntimeError(f"MCA API path '{base_path}' overlaps a registered API path.")
 
-        registration = MCPRegistration(base_path, description.strip(), registry)
+        registration = MCPRegistration(
+            base_path,
+            description.strip(),
+            registry,
+            self._mcp_auth,
+        )
         self._registrations += (registration,)
         return registration
 
@@ -228,6 +249,7 @@ class MCPHost:
         query_params: dict[str, Any],
         body: Any,
         request_headers: Mapping[str, str] | None = None,
+        auth: MCPAuthCallback | None = None,
     ) -> str:
         """Invoke a resolved Ninja operation and serialize its JSON response."""
         source_request = None
@@ -255,6 +277,7 @@ class MCPHost:
             path_params=path_params,
             query_params=query_params,
             body=body,
+            auth=auth,
         )
         if response.status_code >= 400:
             raise self._tool_error(response)
@@ -295,6 +318,7 @@ class MCPHost:
             query_params,
             body,
             request_headers,
+            registration.auth,
         )
 
     def _tool_description(self) -> str:

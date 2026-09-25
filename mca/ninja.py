@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import inspect
 import re
-from collections.abc import Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, TypeVar
+from typing import Any, TypeVar
 from urllib.parse import quote, urlencode
 
+from asgiref.sync import sync_to_async
 from django.http import HttpRequest
 from django.http.response import HttpResponseBase
 from ninja import NinjaAPI, Query, Router, Status
+from ninja.utils import is_async_callable
 
 from .base import BaseMCARouter, MCAError, RegisteredRoute
 from .composition import MCACompositionMixin
@@ -24,6 +26,7 @@ from .schema import attach_components, build_request_schema
 F = TypeVar("F", bound=Callable[..., Any])
 
 _PATH_PARAMETER = re.compile(r"\{([^}]+)\}")
+NinjaAuthCallback = Callable[[HttpRequest], Any]
 
 
 def _request_path(path_template: str, path_params: Mapping[str, Any]) -> str:
@@ -186,6 +189,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         request: HttpRequest,
         path_params: Mapping[str, Any] | None = None,
         *,
+        auth: NinjaAuthCallback | None = None,
         allow_anonymous: bool = False,
     ) -> HttpResponseBase:
         """Execute a registered synchronous Ninja operation against an existing request.
@@ -193,13 +197,15 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         The request is passed through Ninja's normal validation and response
         handling. Set ``allow_anonymous`` only when an internal caller has
         already performed the required authorization checks.
+        Pass ``auth`` to replace the operation's authentication callback on an
+        isolated execution-only operation clone.
 
         Raises:
             MCAExecutionError: If the operation is asynchronous or not bound
                 to the Ninja API.
         """
         route = self.route(operation)
-        ninja_operation = self._ninja_operation(route.operation)
+        ninja_operation = self._ninja_operation(route.operation, auth=auth)
         if inspect.iscoroutinefunction(ninja_operation.view_func):
             raise MCAExecutionError(
                 operation,
@@ -218,20 +224,32 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         request: HttpRequest,
         path_params: Mapping[str, Any] | None = None,
         *,
+        auth: NinjaAuthCallback | None = None,
         allow_anonymous: bool = False,
     ) -> HttpResponseBase:
         """Asynchronously execute a Ninja operation against an existing request.
 
         Synchronous operations are also supported; asynchronous operations are
-        awaited natively. Use this method for async discovery and handlers.
+        awaited natively. ``auth`` may be asynchronous even when the handler
+        itself is synchronous. Use this method for async discovery and
+        handlers.
         """
         route = self.route(operation)
-        ninja_operation = self._ninja_operation(route.operation)
+        ninja_operation = self._ninja_operation(route.operation, auth=auth)
         if allow_anonymous:
             request._mca_allow_anonymous = True
             request._dont_enforce_csrf_checks = True
 
-        response = ninja_operation.run(request, **dict(path_params or {}))
+        operation_kwargs = dict(path_params or {})
+        if auth is not None and is_async_callable(auth) and not inspect.iscoroutinefunction(
+            ninja_operation.view_func
+        ):
+            response = await sync_to_async(
+                ninja_operation.run,
+                thread_sensitive=True,
+            )(request, **operation_kwargs)
+        else:
+            response = ninja_operation.run(request, **operation_kwargs)
         if inspect.isawaitable(response):
             return await response
         return response
@@ -244,6 +262,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         query_params: Mapping[str, Any] | None = None,
         body: Any = None,
         *,
+        auth: NinjaAuthCallback | None = None,
         allow_anonymous: bool = False,
     ) -> HttpResponseBase:
         """Build and execute a Ninja request from path, query, and JSON values.
@@ -252,7 +271,9 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         request metadata are copied to the synthetic request.
 
         ``body`` is JSON-encoded when it is not ``None``. The method is intended
-        for trusted internal delegation and still runs Ninja validation.
+        for trusted internal delegation and still runs Ninja validation. Pass
+        ``auth`` to replace the operation's authentication callback on an
+        isolated execution-only operation clone.
         """
         route = self.route(operation)
         path_values = dict(path_params or {})
@@ -267,6 +288,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             operation,
             request,
             path_values,
+            auth=auth,
             allow_anonymous=allow_anonymous,
         )
 
@@ -278,12 +300,14 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         query_params: Mapping[str, Any] | None = None,
         body: Any = None,
         *,
+        auth: NinjaAuthCallback | None = None,
         allow_anonymous: bool = False,
     ) -> HttpResponseBase:
         """Build and asynchronously execute a Ninja request from JSON values.
 
         This mirrors :meth:`execute_http_request` while supporting both
-        synchronous and asynchronous registered endpoints.
+        synchronous and asynchronous registered endpoints. ``auth`` may be
+        asynchronous even when the handler itself is synchronous.
         """
         route = self.route(operation)
         path_values = dict(path_params or {})
@@ -298,6 +322,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             operation,
             request,
             path_values,
+            auth=auth,
             allow_anonymous=allow_anonymous,
         )
 
@@ -350,13 +375,25 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             self._copy_request_context(request, source_request)
         return request
 
-    def _ninja_operation(self, operation: str) -> Any:
-        """Find a bound Ninja operation by its published operation ID."""
+    def _ninja_operation(
+        self,
+        operation: str,
+        *,
+        auth: NinjaAuthCallback | None = None,
+    ) -> Any:
+        """Find a bound Ninja operation and optionally override its auth."""
         api = self._operation_api()
         for bound_router in api._get_bound_routers():
             for path_view in bound_router.path_operations.values():
                 for ninja_operation in path_view.operations:
                     if ninja_operation.operation_id == operation:
+                        if auth is not None:
+                            original_operation = ninja_operation
+                            ninja_operation = original_operation.clone()
+                            ninja_operation.api = original_operation.api
+                            ninja_operation.auth_callbacks = []
+                            ninja_operation.auth_param = auth
+                            ninja_operation._set_auth(auth)
                         return ninja_operation
         raise MCAExecutionError(
             operation,

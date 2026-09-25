@@ -157,6 +157,28 @@ request, so header-based authentication works without application-specific ASGI
 code. An MCP client can therefore send the same token or API key header that a
 normal HTTP client would send.
 
+For a shared authentication policy across all MCP-exposed APIs, configure an
+async or synchronous Ninja-compatible callback on the host:
+
+~~~python
+from mca.mcp import mcp_host
+from myapp.auth import MCPJWTAuthAsync
+
+mcp_host.configure(
+    mount_path="/api/v2/mcp",
+    auth=MCPJWTAuthAsync(),
+    description_prefix="This tool accesses the v2 formulation APIs.",
+)
+~~~
+
+The callback runs as Ninja operation authentication on the final request passed
+to each handler, including discovery. It can populate `request.user`,
+`request.auth`, or application-specific fields such as `request.token_log` and
+`request.iced_key`. The MCP callback replaces operation-level auth only for
+MCP execution; normal Django and Ninja routes keep their configured
+authentication. With a host callback, the shared router can remain a plain
+`Router(tags=[...])` without repeating `auth=` on every operation.
+
 Applications that need custom users, sessions, or credential translation can
 provide a `request_context_factory`; its final argument is a mapping of headers
 from the incoming MCP transport request.
