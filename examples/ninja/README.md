@@ -34,7 +34,8 @@ For the REST API and MCP endpoint together, start the ASGI application:
 PYTHONPATH=examples/ninja uvicorn demo.asgi:application --reload
 ```
 
-The ASGI entry point exposes the public registry through MCP:
+The demo app registers the public registry from `demo/api.py`, while the ASGI
+entry point exports the shared MCP host:
 
 ```text
 Streamable HTTP endpoint: http://127.0.0.1:8000/api/demo/mcp

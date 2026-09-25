@@ -69,9 +69,9 @@ context through HTTP, in-process dispatch, or MCP.
 | MCP host | The ASGI bridge that exposes Django registries as MCP tools. |
 
 The word registry refers to the application-facing object. For example,
-mca_registry is a Django Ninja registry that can be discovered by MCPHost. The
-word operation refers to a single capability inside that registry, not to the
-registry itself.
+mca_registry is a Django Ninja registry that can be registered with MCPHost.
+The word operation refers to a single capability inside that registry, not to
+the registry itself.
 
 ## Installation
 
@@ -570,6 +570,7 @@ from ninja import NinjaAPI, Path as NinjaPath, Query
 from pydantic import BaseModel, Field
 
 from mca.base import MCAError
+from mca.mcp import mcp_host
 from mca.ninja import NinjaMCARouter
 
 
@@ -586,13 +587,14 @@ class ItemOut(BaseModel):
 
 api = NinjaAPI(title="Items API", version="1.0")
 
-# Name this mca_registry when MCPHost should discover it automatically.
+# Register this router explicitly with the shared MCP host.
 mca_registry = NinjaMCARouter(
     api,
     guides_dir=Path(__file__).with_name("guides"),
     title="Items API",
     version=1.0,
 )
+mcp_host.register(mca_registry, "items")
 
 
 @mca_registry.register(
@@ -729,11 +731,17 @@ application's REST API directly. An MCP tool gives the client a structured
 entry point, while MCA keeps the tool contract aligned with the underlying
 HTTP routes and schemas.
 
-MCPHost wraps a Django ASGI application and automatically exposes every
-installed Django app that publishes a mca_registry from its api module. Use
-direct HTTP when the client can reach the REST API and should use its normal
-authentication. Use MCP when the client needs a tool-oriented connection or
-only has access to the MCP endpoint.
+MCPHost wraps a Django ASGI application and exposes the MCA routers explicitly
+registered by the application. Use direct HTTP when the client can reach the
+REST API and should use its normal authentication. Use MCP when the client
+needs a tool-oriented connection or only has access to the MCP endpoint.
+
+~~~python
+# myapp/api.py
+from mca.mcp import mcp_host
+
+mcp_host.register(mca_registry, "items")
+~~~
 
 ~~~python
 # project/asgi.py
@@ -741,9 +749,9 @@ import os
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "project.settings")
 
-from mca.mcp import MCPHost
+from mca.mcp import mcp_host
 
-application = MCPHost()
+application = mcp_host
 ~~~
 
 For an installed Django app whose label is items, the host provides:
@@ -755,13 +763,26 @@ REST API base path:      /api/items
 ~~~
 
 All other paths are passed to Django's normal ASGI application. The host
-initializes Django, discovers registries, owns MCP session-manager lifespans,
-and mounts stateless Streamable HTTP applications for each app.
+initializes Django, owns MCP session-manager lifespans, and mounts stateless
+Streamable HTTP applications for each explicitly registered router.
 
-Automatic discovery works by inspecting installed Django apps, importing each
-app's api module, and looking for a NinjaMCARouter named mca_registry. The app
-label determines both the endpoint path and the tool name. This convention is
-why the registry must be defined in the app's api module with that exact name.
+Each application registers its own router from its `api.py` module. The module
+must be imported during Django startup, normally through the application's URL
+configuration or `AppConfig.ready()`.
+
+Registration defaults to `/api/{app_label}/mcp` and `{app_label}_api`. Override
+the MCP path, tool name, or REST API base path when an application uses a
+different mounting convention:
+
+~~~python
+application.register(
+    mca_registry,
+    "items",
+    path="/mcp/items",
+    tool_name="items_api",
+    api_base_path="/api",
+)
+~~~
 
 The tool accepts an API-relative HTTP-style route and an optional JSON body:
 
@@ -814,9 +835,9 @@ null. Invalid routes, validation failures, unknown operations, and endpoint
 errors are returned as MCP tool errors containing the MCA error code, detail,
 field, and HTTP status.
 
-### Building one MCP server manually
+### Building one MCP server directly
 
-For applications that do not want automatic Django app discovery:
+For applications that want to mount one MCP server without `MCPHost`:
 
 ~~~python
 from mca.mcp import MCPHost
@@ -878,7 +899,7 @@ mca.pydantic
 mca.ninja
     NinjaMCARouter, MCAExecutionError
 mca.mcp
-    MCPHost, MCPRoute
+    MCPHost, MCPRoute, mcp_host
 ~~~
 
 Use BaseMCARouter when implementing another transport adapter. A custom adapter

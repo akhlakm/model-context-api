@@ -32,16 +32,16 @@ class MCPRoute:
 
     app_label: str
     path: str
+    tool_name: str
     server: MCPServer
     application: Any
 
 
 class MCPHost:
-    """ASGI host that exposes each Django app's Ninja MCA as an MCP tool.
+    """ASGI host that exposes manually registered Ninja MCA routers as MCP tools.
 
-    The host discovers application registries lazily after Django initializes,
-    then forwards MCA-relative tool routes to the corresponding Streamable HTTP
-    MCP application and all other traffic to Django.
+    The host forwards MCA-relative tool routes to the corresponding Streamable
+    HTTP MCP application and all other traffic to Django.
     """
 
     def __init__(self, request_context_factory: RequestContextFactory | None = None):
@@ -56,6 +56,49 @@ class MCPHost:
         self._django_application: Any | None = None
         self._routes: tuple[MCPRoute, ...] = ()
         self.request_context_factory = request_context_factory
+
+    def register(
+        self,
+        registry: NinjaMCARouter,
+        app_label: str,
+        *,
+        path: str | None = None,
+        tool_name: str | None = None,
+        api_base_path: str | None = None,
+    ) -> MCPRoute:
+        """Register one MCA router before the host starts serving requests.
+
+        By default, ``app_label='items'`` registers the MCP endpoint at
+        ``/api/items/mcp`` with the tool name ``items_api``. Override ``path``,
+        ``tool_name``, or ``api_base_path`` when an application uses different
+        mounting conventions.
+        """
+        if self._django_application is not None:
+            raise RuntimeError("MCP routes must be registered before host initialization.")
+        if not isinstance(registry, NinjaMCARouter):
+            raise TypeError("registry must be a NinjaMCARouter.")
+
+        route_path = path or f"/api/{app_label}/mcp"
+        route_path = f"/{route_path.lstrip('/')}".rstrip('/') or "/"
+        route_tool_name = tool_name or f"{app_label}_api"
+        if any(route.path == route_path for route in self._routes):
+            raise RuntimeError(f"MCA MCP path '{route_path}' is registered more than once.")
+        if any(route.tool_name == route_tool_name for route in self._routes):
+            raise RuntimeError(f"MCA MCP tool '{route_tool_name}' is registered more than once.")
+
+        server = self.build_server(
+            registry,
+            app_label,
+            tool_name=route_tool_name,
+            api_base_path=api_base_path,
+        )
+        application = server.streamable_http_app(
+            streamable_http_path="/",
+            stateless_http=True,
+        )
+        route = MCPRoute(app_label, route_path, route_tool_name, server, application)
+        self._routes += (route,)
+        return route
 
     @staticmethod
     def _json_response(response: Any) -> Any:
@@ -215,15 +258,22 @@ class MCPHost:
             request_headers,
         )
 
-    def build_server(self, registry: NinjaMCARouter, app_label: str) -> MCPServer:
+    def build_server(
+        self,
+        registry: NinjaMCARouter,
+        app_label: str,
+        *,
+        tool_name: str | None = None,
+        api_base_path: str | None = None,
+    ) -> MCPServer:
         """Build the MCP server and tool for one Django app's MCA registry.
 
-        The resulting tool accepts an HTTP-style route relative to
-        ``/api/{app_label}``; ``GET /`` is the discovery entry point.
+        The resulting tool accepts an API-relative HTTP-style route; ``GET /``
+        is the discovery entry point.
         """
         server = MCPServer(f"{app_label} API")
-        tool_name = f"{app_label}_api"
-        rest_base_path = f"/api/{app_label}"
+        tool_name = tool_name or f"{app_label}_api"
+        rest_base_path = api_base_path or f"/api/{app_label}"
 
         @server.tool(
             name=tool_name,
@@ -278,56 +328,6 @@ class MCPHost:
         call_api.__name__ = tool_name
         return server
 
-    def discover_routes(self) -> tuple[MCPRoute, ...]:
-        """Discover Django apps that export a ``mca_registry`` Ninja router.
-
-        Each discovered app receives a unique ``/api/{label}/mcp`` path and
-        ``{label}_api`` tool name. Duplicate paths or names are rejected.
-        """
-        from importlib import import_module
-
-        from django.apps import apps
-
-        routes: list[MCPRoute] = []
-        paths: set[str] = set()
-        tool_names: set[str] = set()
-        for app_config in apps.get_app_configs():
-            module_name = f"{app_config.name}.api"
-            try:
-                module = import_module(module_name)
-            except ModuleNotFoundError as exc:
-                if exc.name == module_name:
-                    continue
-                raise
-
-            registry = getattr(module, "mca_registry", None)
-            if registry is None:
-                continue
-            if not isinstance(registry, NinjaMCARouter):
-                raise RuntimeError(
-                    f"MCA application '{app_config.label}' must expose a NinjaMCARouter "
-                    "named 'mca_registry' from its api module."
-                )
-
-            app_label = app_config.label
-            path = f"/api/{app_label}/mcp"
-            tool_name = f"{app_label}_api"
-            if path in paths:
-                raise RuntimeError(f"MCA MCP path '{path}' is registered more than once.")
-            if tool_name in tool_names:
-                raise RuntimeError(f"MCA MCP tool '{tool_name}' is registered more than once.")
-
-            server = self.build_server(registry, app_label)
-            application = server.streamable_http_app(
-                streamable_http_path="/",
-                stateless_http=True,
-            )
-            routes.append(MCPRoute(app_label, path, server, application))
-            paths.add(path)
-            tool_names.add(tool_name)
-
-        return tuple(routes)
-
     async def _dispatch(self, scope: dict[str, Any], receive: Any, send: Any):
         """Route MCP paths to MCP applications and delegate everything else to Django."""
         self._initialize()
@@ -347,18 +347,17 @@ class MCPHost:
         return await self._django_application(scope, receive, send)
 
     def _initialize(self) -> None:
-        """Initialize Django and discover MCP routes exactly once."""
+        """Initialize Django exactly once after routes have been registered."""
         if self._django_application is not None:
             return
 
         from django.core.asgi import get_asgi_application
 
         self._django_application = get_asgi_application()
-        self._routes = self.discover_routes()
 
     @asynccontextmanager
     async def _mcp_lifespan(self):
-        """Run every discovered MCP session manager during ASGI lifespan."""
+        """Run every registered MCP session manager during ASGI lifespan."""
         self._initialize()
         async with AsyncExitStack() as stack:
             for route in self._routes:
@@ -394,3 +393,7 @@ class MCPHost:
         if scope.get("type") == "lifespan":
             return await self._handle_lifespan(receive, send)
         return await self._dispatch(scope, receive, send)
+
+
+# Shared application host for app-local MCP router registration.
+mcp_host = MCPHost()

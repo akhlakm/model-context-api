@@ -26,7 +26,10 @@ if str(EXAMPLE_ROOT) not in sys.path:
     sys.path.insert(0, str(EXAMPLE_ROOT))
 
 from demo.api import public_mca
+from demo.asgi import application as demo_application
 from demo.rpc import billing_rpc
+
+from mca.mcp import mcp_host
 
 
 class NinjaCompositionExampleTests(TestCase):
@@ -96,6 +99,13 @@ class NinjaCompositionExampleTests(TestCase):
             nested_guide["guides"]["billing/invoices/legacy_format.md"],
             "# Legacy invoice format\n\n"
             "Legacy clients may request invoice fields using the compatibility format.\n",
+        )
+
+    def test_mcp_endpoint_is_registered_explicitly(self):
+        self.assertIs(demo_application, mcp_host)
+        self.assertEqual(
+            [(route.path, route.tool_name) for route in demo_application._routes],
+            [("/api/demo/mcp", "demo_api")],
         )
 
     def test_public_discovery_composes_private_schemas_and_caches_them(self):

@@ -49,6 +49,34 @@ def _mcp_context(server, token="trusted-principal"):
 
 
 class AsyncMCPHostTests(IsolatedAsyncioTestCase):
+    async def test_manual_registration_uses_conventions_and_overrides(self):
+        registry = NinjaMCARouter(Router())
+        host = MCPHost()
+
+        default_route = host.register(registry, "items")
+        custom_route = host.register(
+            registry,
+            "billing",
+            path="/mcp/billing",
+            tool_name="billing_api",
+            api_base_path="/api",
+        )
+
+        self.assertEqual(default_route.path, "/api/items/mcp")
+        self.assertEqual(default_route.tool_name, "items_api")
+        self.assertEqual(custom_route.path, "/mcp/billing")
+        self.assertEqual(custom_route.tool_name, "billing_api")
+
+    async def test_manual_registration_rejects_duplicate_paths_and_tools(self):
+        registry = NinjaMCARouter(Router())
+        host = MCPHost()
+        host.register(registry, "items")
+
+        with self.assertRaisesRegex(RuntimeError, "path"):
+            host.register(registry, "other", path="/api/items/mcp")
+        with self.assertRaisesRegex(RuntimeError, "tool"):
+            host.register(registry, "items", path="/other")
+
     async def test_mcp_can_execute_async_discovery_and_operations(self):
         registry = NinjaMCARouter(Router())
 

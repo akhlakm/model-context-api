@@ -10,6 +10,7 @@ from ninja import Path as NinjaPath
 from ninja import Router
 from ninja.errors import HttpError
 
+from mca.mcp import mcp_host
 from mca.ninja import NinjaMCARouter
 
 from .rpc import billing_rpc
@@ -25,7 +26,7 @@ public_mca = NinjaMCARouter(
     usage="Discover public operations and guides before requesting an invoice.",
 )
 public_mca.mount("billing", billing_rpc)
-mca_registry = public_mca
+mcp_host.register(public_mca, "demo", api_base_path="/api")
 
 
 def demo_auth(request: HttpRequest) -> dict[str, Any] | None:

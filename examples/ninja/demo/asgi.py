@@ -4,6 +4,6 @@ import os
 
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "demo.settings")
 
-from mca.mcp import MCPHost
+from mca.mcp import mcp_host
 
-application = MCPHost()
+application = mcp_host
