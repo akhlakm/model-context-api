@@ -38,16 +38,15 @@ The demo app registers the public registry from `demo/api.py`, while the ASGI
 entry point exports the shared MCP host:
 
 ```text
-Streamable HTTP endpoint: http://127.0.0.1:8000/api/demo/mcp
-MCP tool name:           demo_api
+Streamable HTTP endpoint: http://127.0.0.1:8000/mcp
+MCP tool name:           mc_api
 REST API base path:      /api
 ```
 
-The MCP tool uses routes relative to `/api`, for example
-`demo_api(route="GET /")` for discovery or
-`demo_api(route="GET /invoices/7")` for an operation. Configure the MCP
-client's HTTP transport with `X-Demo-Token: demo-token` for authenticated
-invoice operations. Discovery works without credentials.
+The MCP tool uses full API paths, for example `mc_api(route="GET /api")` for
+discovery or `mc_api(route="GET /api/invoices/7")` for an operation. Configure
+the MCP client's HTTP transport with `X-Demo-Token: demo-token` for
+authenticated invoice operations. Discovery works without credentials.
 
 Inspect public discovery:
 

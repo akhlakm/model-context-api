@@ -277,10 +277,10 @@ well-behaved client can follow this sequence:
    {"name": "Example", "description": "Created after discovery."}
    ~~~
 
-The same sequence can use an MCP tool instead: call items_api with
-GET /, then request the guide and schema, then call items_api with POST /items
-and the JSON body. The business operation is still the same registered
-operation.
+The same sequence can use the shared `mc_api` tool instead: call it with
+`GET /api/items`, then request the guide and schema, then call it with
+`POST /api/items/items` and the JSON body. The business operation is still the
+same registered operation.
 
 ## Framework-independent Pydantic APIs
 
@@ -594,7 +594,12 @@ mca_registry = NinjaMCARouter(
     title="Items API",
     version=1.0,
 )
-mcp_host.register(mca_registry, "items")
+mcp_host.register(
+    mca_registry,
+    "items",
+    api_base_path="/api/items",
+    description="Public item API.",
+)
 
 
 @mca_registry.register(
@@ -740,7 +745,12 @@ needs a tool-oriented connection or only has access to the MCP endpoint.
 # myapp/api.py
 from mca.mcp import mcp_host
 
-mcp_host.register(mca_registry, "items")
+mcp_host.register(
+    mca_registry,
+    "items",
+    api_base_path="/api/items",
+    description="Public item API.",
+)
 ~~~
 
 ~~~python
@@ -754,73 +764,91 @@ from mca.mcp import mcp_host
 application = mcp_host
 ~~~
 
-For an installed Django app whose label is items, the host provides:
+For registered applications, the host provides one shared MCP endpoint and
+tool:
 
 ~~~text
-Streamable HTTP endpoint: /api/items/mcp
-MCP tool name:           items_api
+Streamable HTTP endpoint: /mcp
+MCP tool name:           mc_api
 REST API base path:      /api/items
 ~~~
 
 All other paths are passed to Django's normal ASGI application. The host
-initializes Django, owns MCP session-manager lifespans, and mounts stateless
-Streamable HTTP applications for each explicitly registered router.
+initializes Django, owns the MCP session-manager lifespan, and mounts one
+stateless Streamable HTTP application for all explicitly registered routers.
 
 Each application registers its own router from its `api.py` module. The module
 must be imported during Django startup, normally through the application's URL
 configuration or `AppConfig.ready()`.
 
-Registration defaults to `/api/{app_label}/mcp` and `{app_label}_api`. Override
-the MCP path, tool name, or REST API base path when an application uses a
-different mounting convention:
+Pass the complete REST API mount path from `urls.py` when registering a router.
+The app label is metadata and is not used to guess the URL:
 
 ~~~python
-application.register(
+mcp_host.register(
     mca_registry,
     "items",
-    path="/mcp/items",
-    tool_name="items_api",
-    api_base_path="/api",
+    api_base_path="/api/v2/items",
+    description="Public item API.",
 )
 ~~~
 
-The tool accepts an API-relative HTTP-style route and an optional JSON body:
+The MCP mount defaults to `/mcp`. Configure it before the host initializes when
+the project exposes MCP elsewhere:
 
-~~~text
-items_api(route, body=None)
+~~~python
+mcp_host.configure(
+    mount_path="/api/v2/mcp",
+    description_prefix=(
+        "This tool accesses the public v2 billing APIs. "
+        "Use it for invoice lookup and management."
+    ),
+)
 ~~~
 
-Start with discovery:
+The description prefix appears before the generated usage instructions and
+registered API list. It is useful for explaining what the tool accesses and
+when a client should use it.
+
+The tool accepts a full API HTTP-style route and an optional JSON body:
 
 ~~~text
-items_api(route="GET /")
-items_api(route="GET /?guide=items.md")
-items_api(route="GET /?operation=get_item")
+mc_api(route, body=None)
 ~~~
 
-Then invoke operations relative to /api/items:
+The tool description lists every registered API base path and its description.
+Start discovery at the relevant API base path:
 
 ~~~text
-items_api(route="GET /items/7")
-items_api(
-    route="POST /items",
+mc_api(route="GET /api/items")
+mc_api(route="GET /api/items?guide=items.md")
+mc_api(route="GET /api/items?operation=get_item")
+~~~
+
+Then invoke operations with their full API paths:
+
+~~~text
+mc_api(route="GET /api/items/items/7")
+mc_api(
+    route="POST /api/items/items",
     body={"name": "Created through MCP", "description": "Example"},
 )
-items_api(route="DELETE /items/7")
+mc_api(route="DELETE /api/items/items/7")
 ~~~
 
-Do not include the REST or MCP prefix:
+The route must include the registered REST API prefix and must not include the
+MCP prefix:
 
 ~~~text
-Correct:   GET /items/7
-Incorrect: GET /api/items/items/7
-Incorrect: GET /api/items/mcp/items/7
+Correct:   GET /api/items/items/7
+Incorrect: GET /items/7
+Incorrect: GET /mcp/api/items/items/7
 ~~~
 
-The route parser accepts a method and relative path with or without a leading
+The route parser accepts a method and full API path with or without a leading
 slash, parses query strings, preserves repeated query parameters, accepts JSON
-bodies only for POST, PUT, and PATCH, and resolves path parameters against the
-registered routes.
+bodies only for POST, PUT, and PATCH, and resolves the path after the
+registered API prefix against the selected router.
 
 MCP execution supports both synchronous and asynchronous Ninja operations,
 including asynchronous `get_context` discovery and mounted-router composition.
@@ -837,21 +865,28 @@ field, and HTTP status.
 
 ### Building one MCP server directly
 
-For applications that want to mount one MCP server without `MCPHost`:
+For applications that want to mount the shared API tool without using the
+MCPHost ASGI wrapper:
 
 ~~~python
 from mca.mcp import MCPHost
 from myapp.api import mca_registry
 
 host = MCPHost()
-server = host.build_server(mca_registry, "items")
+host.register(
+    mca_registry,
+    "items",
+    api_base_path="/api/items",
+    description="Public item API.",
+)
+server = host.build_server()
 application = server.streamable_http_app(
     streamable_http_path="/",
     stateless_http=True,
 )
 ~~~
 
-The resulting server exposes the items_api tool. The surrounding ASGI
+The resulting server exposes the `mc_api` tool. The surrounding ASGI
 application is responsible for starting the server's session manager and for
 providing Django settings.
 
@@ -899,7 +934,7 @@ mca.pydantic
 mca.ninja
     NinjaMCARouter, MCAExecutionError
 mca.mcp
-    MCPHost, MCPRoute, mcp_host
+    MCPHost, MCPRegistration, mcp_host
 ~~~
 
 Use BaseMCARouter when implementing another transport adapter. A custom adapter

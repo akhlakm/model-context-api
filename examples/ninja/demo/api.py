@@ -26,7 +26,12 @@ public_mca = NinjaMCARouter(
     usage="Discover public operations and guides before requesting an invoice.",
 )
 public_mca.mount("billing", billing_rpc)
-mcp_host.register(public_mca, "demo", api_base_path="/api")
+mcp_host.register(
+    public_mca,
+    "demo",
+    api_base_path="/api",
+    description="Public invoice and billing API.",
+)
 
 
 def demo_auth(request: HttpRequest) -> dict[str, Any] | None:

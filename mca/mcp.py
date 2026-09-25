@@ -5,7 +5,7 @@ from __future__ import annotations
 import inspect
 import json
 from collections.abc import Awaitable, Callable, Mapping
-from contextlib import AsyncExitStack, asynccontextmanager
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
@@ -20,6 +20,7 @@ from .ninja import MCAExecutionError, NinjaMCARouter
 from .request import build_request
 
 BODY_METHODS = {"POST", "PUT", "PATCH"}
+MCP_TOOL_NAME = "mc_api"
 RequestContextFactory = Callable[
     [str, str, str, Mapping[str, Any], Mapping[str, Any], Any, Mapping[str, str]],
     HttpRequest | None | Awaitable[HttpRequest | None],
@@ -27,25 +28,27 @@ RequestContextFactory = Callable[
 
 
 @dataclass(frozen=True)
-class MCPRoute:
-    """Mounted MCP application and its public Django URL."""
+class MCPRegistration:
+    """One MCA router registered with the shared MCP API tool."""
 
     app_label: str
-    path: str
-    tool_name: str
-    server: MCPServer
-    application: Any
+    api_base_path: str
+    description: str
+    registry: NinjaMCARouter
 
 
 class MCPHost:
-    """ASGI host that exposes manually registered Ninja MCA routers as MCP tools.
+    """ASGI host exposing registered MCA routers through one MCP API tool.
 
-    The host forwards MCA-relative tool routes to the corresponding Streamable
-    HTTP MCP application and all other traffic to Django.
+    The host forwards full API paths from the shared ``mc_api`` tool to the
+    matching registered router and all other traffic to Django.
     """
 
-    def __init__(self, request_context_factory: RequestContextFactory | None = None):
-        """Create an uninitialized host; Django and app routes load on first use.
+    def __init__(
+        self,
+        request_context_factory: RequestContextFactory | None = None,
+    ):
+        """Create an uninitialized host with one MCP endpoint.
 
         ``request_context_factory`` may return a request carrying the user,
         credentials, session, or headers that application authentication needs
@@ -54,51 +57,78 @@ class MCPHost:
         synthetic Django request automatically.
         """
         self._django_application: Any | None = None
-        self._routes: tuple[MCPRoute, ...] = ()
+        self._mcp_server: MCPServer | None = None
+        self._mcp_application: Any | None = None
+        self._registrations: tuple[MCPRegistration, ...] = ()
         self.request_context_factory = request_context_factory
+        self._mcp_path = self._normalize_path("/mcp")
+        self._description_prefix = ""
+
+    def configure(
+        self,
+        mount_path: str = "/mcp",
+        description_prefix: str = "",
+    ) -> None:
+        """Configure the shared MCP endpoint and tool context before initialization."""
+        if not isinstance(description_prefix, str):
+            raise ValueError("MCP tool description prefix must be a string.")
+        if self._django_application is not None or self._mcp_server is not None:
+            raise RuntimeError("MCP host must be configured before initialization.")
+        self._mcp_path = self._normalize_path(mount_path)
+        self._description_prefix = description_prefix.strip()
+
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        """Normalize a configured URL path without a trailing slash."""
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError("Configured MCP and API paths must be non-empty strings.")
+        value = path.strip()
+        if any(character.isspace() for character in value):
+            raise ValueError("Configured MCP and API paths cannot contain whitespace.")
+        parsed = urlsplit(value)
+        if parsed.scheme or parsed.netloc or parsed.query or parsed.fragment:
+            raise ValueError("Configured MCP and API paths must be path-only values.")
+        return f"/{parsed.path.lstrip('/')}".rstrip("/") or "/"
+
+    @staticmethod
+    def _paths_overlap(first: str, second: str) -> bool:
+        """Return whether two normalized API prefixes can match one request."""
+        return (
+            first == second
+            or first == "/"
+            or second == "/"
+            or first.startswith(f"{second}/")
+            or second.startswith(f"{first}/")
+        )
 
     def register(
         self,
         registry: NinjaMCARouter,
         app_label: str,
         *,
-        path: str | None = None,
-        tool_name: str | None = None,
-        api_base_path: str | None = None,
-    ) -> MCPRoute:
+        api_base_path: str,
+        description: str,
+    ) -> MCPRegistration:
         """Register one MCA router before the host starts serving requests.
 
-        By default, ``app_label='items'`` registers the MCP endpoint at
-        ``/api/items/mcp`` with the tool name ``items_api``. Override ``path``,
-        ``tool_name``, or ``api_base_path`` when an application uses different
-        mounting conventions.
+        ``api_base_path`` is the complete URL prefix where the router is
+        mounted by Django and Ninja. The required description is included in
+        the shared ``mc_api`` tool description.
         """
-        if self._django_application is not None:
-            raise RuntimeError("MCP routes must be registered before host initialization.")
+        if self._django_application is not None or self._mcp_server is not None:
+            raise RuntimeError("MCA APIs must be registered before host initialization.")
         if not isinstance(registry, NinjaMCARouter):
             raise TypeError("registry must be a NinjaMCARouter.")
+        if not isinstance(description, str) or not description.strip():
+            raise ValueError("MCA API registration requires a non-empty description.")
 
-        route_path = path or f"/api/{app_label}/mcp"
-        route_path = f"/{route_path.lstrip('/')}".rstrip('/') or "/"
-        route_tool_name = tool_name or f"{app_label}_api"
-        if any(route.path == route_path for route in self._routes):
-            raise RuntimeError(f"MCA MCP path '{route_path}' is registered more than once.")
-        if any(route.tool_name == route_tool_name for route in self._routes):
-            raise RuntimeError(f"MCA MCP tool '{route_tool_name}' is registered more than once.")
+        base_path = self._normalize_path(api_base_path)
+        if any(self._paths_overlap(base_path, item.api_base_path) for item in self._registrations):
+            raise RuntimeError(f"MCA API path '{base_path}' overlaps a registered API path.")
 
-        server = self.build_server(
-            registry,
-            app_label,
-            tool_name=route_tool_name,
-            api_base_path=api_base_path,
-        )
-        application = server.streamable_http_app(
-            streamable_http_path="/",
-            stateless_http=True,
-        )
-        route = MCPRoute(app_label, route_path, route_tool_name, server, application)
-        self._routes += (route,)
-        return route
+        registration = MCPRegistration(app_label, base_path, description.strip(), registry)
+        self._registrations += (registration,)
+        return registration
 
     @staticmethod
     def _json_response(response: Any) -> Any:
@@ -156,7 +186,7 @@ class MCPHost:
         if parsed.scheme or parsed.netloc or parsed.fragment or not parsed.path:
             raise MCAError(
                 "invalid_route",
-                "Route must be an API-relative path without a scheme, host, or fragment.",
+                "Route must be a full API path without a scheme, host, or fragment.",
                 "route",
             )
 
@@ -167,6 +197,28 @@ class MCPHost:
             for key, values in values.items()
         }
         return method, path, query_params
+
+    def _resolve_registration(self, path: str) -> tuple[MCPRegistration, str]:
+        """Resolve a full API path to a registration and relative route."""
+        for registration in self._registrations:
+            base_path = registration.api_base_path
+            if base_path == "/":
+                matches = True
+            else:
+                matches = path == base_path or path.startswith(f"{base_path}/")
+            if not matches:
+                continue
+
+            relative_path = path if base_path == "/" else path[len(base_path) :] or "/"
+            return registration, relative_path
+
+        registered_paths = ", ".join(item.api_base_path for item in self._registrations) or "none"
+        raise MCAError(
+            "unknown_api",
+            f"No registered API matches {path}. Registered API paths: {registered_paths}.",
+            "route",
+            404,
+        )
 
     async def _call_operation(
         self,
@@ -214,21 +266,13 @@ class MCPHost:
 
     async def _call_route(
         self,
-        registry: NinjaMCARouter,
-        app_label: str,
         route: str,
         body: Any,
-        api_base_path: str,
         request_headers: Mapping[str, str] | None = None,
     ) -> str:
-        """Validate and resolve an HTTP-style MCP route before execution."""
+        """Validate and resolve a full API route before execution."""
         method, path, query_params = self._parse_route(route)
-        if path == api_base_path or path.startswith(f"{api_base_path}/"):
-            raise MCAError(
-                "invalid_route",
-                f"Route must be relative to {api_base_path}; omit the API prefix.",
-                "route",
-            )
+        registration, relative_path = self._resolve_registration(path)
         if body is not None and method not in BODY_METHODS:
             raise MCAError(
                 "invalid_body",
@@ -236,7 +280,7 @@ class MCPHost:
                 "body",
             )
 
-        resolved = registry.resolve(method, path)
+        resolved = registration.registry.resolve(method, relative_path)
         if resolved is None:
             raise MCAError(
                 "unknown_route",
@@ -247,42 +291,46 @@ class MCPHost:
 
         operation, path_params = resolved
         return await self._call_operation(
-            registry,
-            app_label,
+            registration.registry,
+            registration.app_label,
             operation,
             method,
-            path,
+            relative_path,
             path_params,
             query_params,
             body,
             request_headers,
         )
 
-    def build_server(
-        self,
-        registry: NinjaMCARouter,
-        app_label: str,
-        *,
-        tool_name: str | None = None,
-        api_base_path: str | None = None,
-    ) -> MCPServer:
-        """Build the MCP server and tool for one Django app's MCA registry.
+    def _tool_description(self) -> str:
+        """Build the shared tool description from registered API metadata."""
+        if self._registrations:
+            api_list = "\n".join(
+                f"- {item.api_base_path}: {item.description}" for item in self._registrations
+            )
+        else:
+            api_list = "- No APIs are registered."
+        generated_description = (
+            "Call registered MCA APIs with a full HTTP-style route. "
+            "Use route='GET /api/path' for discovery or an operation, and pass "
+            "body for JSON request data. Results are JSON text; HTTP 204 responses "
+            "return null. Registered API paths:\n"
+            f"{api_list}"
+        )
+        if not self._description_prefix:
+            return generated_description
+        return f"{self._description_prefix}\n\n{generated_description}"
 
-        The resulting tool accepts an API-relative HTTP-style route; ``GET /``
-        is the discovery entry point.
-        """
-        server = MCPServer(f"{app_label} API")
-        tool_name = tool_name or f"{app_label}_api"
-        rest_base_path = api_base_path or f"/api/{app_label}"
+    def build_server(self) -> MCPServer:
+        """Build one MCP server exposing all registered APIs through ``mc_api``."""
+        if self._mcp_server is not None:
+            return self._mcp_server
+
+        server = MCPServer("MCA API")
 
         @server.tool(
-            name=tool_name,
-            description=(
-                f"Call the {app_label} API with an HTTP-style route relative to its API mount. "
-                "Start with route='GET /' to discover operations, guides and schemas. "
-                "Pass body for JSON request data. Results are JSON text; "
-                "HTTP 204 responses return null. Direct REST access is also possible."
-            ),
+            name=MCP_TOOL_NAME,
+            description=self._tool_description(),
             structured_output=False,
         )
         async def call_api(
@@ -290,14 +338,11 @@ class MCPHost:
             body: Any = None,
             context: MCPContext | None = None,
         ) -> str:
-            """Handle one MCP tool call using an MCA-relative HTTP route."""
+            """Handle one MCP tool call using a full API route."""
             try:
                 return await self._call_route(
-                    registry,
-                    app_label,
                     route,
                     body,
-                    rest_base_path,
                     self._request_headers(context),
                 )
             except MCAError as exc:
@@ -325,43 +370,45 @@ class MCPHost:
                     )
                 ) from exc
 
-        call_api.__name__ = tool_name
+        call_api.__name__ = MCP_TOOL_NAME
+        self._mcp_server = server
         return server
 
     async def _dispatch(self, scope: dict[str, Any], receive: Any, send: Any):
-        """Route MCP paths to MCP applications and delegate everything else to Django."""
+        """Route the one MCP path to MCP and delegate everything else to Django."""
         self._initialize()
         if scope.get("type") == "http":
             path = scope.get("path", "")
             normalized_path = path.rstrip("/") or "/"
-            for route in self._routes:
-                if normalized_path != route.path:
-                    continue
-
+            if normalized_path == self._mcp_path:
                 mcp_scope = dict(scope)
                 mcp_scope["path"] = "/"
                 mcp_scope["raw_path"] = b"/"
                 mcp_scope["root_path"] = ""
-                return await route.application(mcp_scope, receive, send)
+                return await self._mcp_application(mcp_scope, receive, send)
 
         return await self._django_application(scope, receive, send)
 
     def _initialize(self) -> None:
-        """Initialize Django exactly once after routes have been registered."""
+        """Initialize Django and the shared MCP application exactly once."""
         if self._django_application is not None:
             return
 
         from django.core.asgi import get_asgi_application
 
         self._django_application = get_asgi_application()
+        self.build_server()
+        self._mcp_application = self._mcp_server.streamable_http_app(
+            streamable_http_path="/",
+            stateless_http=True,
+        )
 
     @asynccontextmanager
     async def _mcp_lifespan(self):
-        """Run every registered MCP session manager during ASGI lifespan."""
+        """Run the shared MCP session manager during ASGI lifespan."""
         self._initialize()
-        async with AsyncExitStack() as stack:
-            for route in self._routes:
-                await stack.enter_async_context(route.server.session_manager.run())
+        assert self._mcp_server is not None
+        async with self._mcp_server.session_manager.run():
             yield
 
     async def _handle_lifespan(self, receive: Any, send: Any):

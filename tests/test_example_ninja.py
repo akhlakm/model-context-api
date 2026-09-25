@@ -104,8 +104,22 @@ class NinjaCompositionExampleTests(TestCase):
     def test_mcp_endpoint_is_registered_explicitly(self):
         self.assertIs(demo_application, mcp_host)
         self.assertEqual(
-            [(route.path, route.tool_name) for route in demo_application._routes],
-            [("/api/demo/mcp", "demo_api")],
+            [
+                (registration.api_base_path, registration.description)
+                for registration in demo_application._registrations
+            ],
+            [("/api", "Public invoice and billing API.")],
+        )
+        self.assertEqual(demo_application._mcp_path, "/mcp")
+        self.assertIn(
+            "/api: Public invoice and billing API.",
+            demo_application._tool_description(),
+        )
+        self.assertTrue(
+            demo_application._tool_description().startswith(
+                "This tool accesses the demo public invoice API. "
+                "Use it to discover and manage demo invoices.\n\n"
+            )
         )
 
     def test_public_discovery_composes_private_schemas_and_caches_them(self):

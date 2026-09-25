@@ -20,6 +20,7 @@ from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from ninja import Router
 
+from mca.base import MCAError
 from mca.mcp import MCPHost
 from mca.ninja import NinjaMCARouter
 
@@ -39,7 +40,7 @@ def _authenticated_registry():
 
 def _mcp_context(server, token="trusted-principal"):
     request = RequestFactory().get(
-        "/api/items/mcp",
+        "/mcp",
         HTTP_X_MCP_TOKEN=token,
     )
     return Context(
@@ -49,33 +50,136 @@ def _mcp_context(server, token="trusted-principal"):
 
 
 class AsyncMCPHostTests(IsolatedAsyncioTestCase):
-    async def test_manual_registration_uses_conventions_and_overrides(self):
+    async def test_single_tool_lists_registered_apis(self):
         registry = NinjaMCARouter(Router())
         host = MCPHost()
-
-        default_route = host.register(registry, "items")
-        custom_route = host.register(
-            registry,
-            "billing",
-            path="/mcp/billing",
-            tool_name="billing_api",
-            api_base_path="/api",
+        host.configure(
+            description_prefix="This tool accesses the public API.\nUse it for item operations."
         )
 
-        self.assertEqual(default_route.path, "/api/items/mcp")
-        self.assertEqual(default_route.tool_name, "items_api")
-        self.assertEqual(custom_route.path, "/mcp/billing")
-        self.assertEqual(custom_route.tool_name, "billing_api")
+        default_registration = host.register(
+            registry,
+            "items",
+            api_base_path="/api/v2/items",
+            description="Public item API.",
+        )
+        custom_registration = host.register(
+            registry,
+            "billing",
+            api_base_path="/billing",
+            description="Billing API.",
+        )
 
-    async def test_manual_registration_rejects_duplicate_paths_and_tools(self):
+        self.assertEqual(default_registration.api_base_path, "/api/v2/items")
+        self.assertEqual(custom_registration.api_base_path, "/billing")
+        tools = await host.build_server().list_tools()
+        self.assertEqual([tool.name for tool in tools], ["mc_api"])
+        self.assertTrue(
+            tools[0].description.startswith(
+                "This tool accesses the public API.\nUse it for item operations.\n\n"
+            )
+        )
+        self.assertIn("/api/v2/items: Public item API.", tools[0].description)
+        self.assertIn("/billing: Billing API.", tools[0].description)
+        with self.assertRaisesRegex(RuntimeError, "before host initialization"):
+            host.register(
+                registry,
+                "late",
+                api_base_path="/api/v2/late",
+                description="Late API.",
+            )
+
+    async def test_manual_registration_rejects_duplicate_and_overlapping_api_paths(self):
         registry = NinjaMCARouter(Router())
         host = MCPHost()
-        host.register(registry, "items")
+        host.register(
+            registry,
+            "items",
+            api_base_path="/api/v2/items",
+            description="Items API.",
+        )
 
         with self.assertRaisesRegex(RuntimeError, "path"):
-            host.register(registry, "other", path="/api/items/mcp")
-        with self.assertRaisesRegex(RuntimeError, "tool"):
-            host.register(registry, "items", path="/other")
+            host.register(
+                registry,
+                "other",
+                api_base_path="/api/v2/items",
+                description="Other API.",
+            )
+        with self.assertRaisesRegex(RuntimeError, "overlaps"):
+            host.register(
+                registry,
+                "nested",
+                api_base_path="/api/v2/items/private",
+                description="Nested API.",
+            )
+
+    async def test_single_tool_routes_multiple_registered_apis(self):
+        items = NinjaMCARouter(Router())
+        billing = NinjaMCARouter(Router())
+
+        @items.register("/items", response=dict)
+        def get_items(request):
+            return {"api": "items"}
+
+        @billing.register("/invoices", response=dict)
+        def get_invoices(request):
+            return {"api": "billing"}
+
+        host = MCPHost()
+        host.register(
+            items,
+            "items",
+            api_base_path="/api/v2/items",
+            description="Item API.",
+        )
+        host.register(
+            billing,
+            "billing",
+            api_base_path="/billing",
+            description="Billing API.",
+        )
+
+        items_result = await host._call_route("GET /api/v2/items/items", None)
+        billing_result = await host._call_route("GET /billing/invoices", None)
+
+        self.assertEqual(json.loads(items_result), {"api": "items"})
+        self.assertEqual(json.loads(billing_result), {"api": "billing"})
+        with self.assertRaisesRegex(MCAError, "No registered API"):
+            await host._call_route("GET /api/items-extra", None)
+
+    async def test_custom_mcp_path_routes_only_one_transport_application(self):
+        host = MCPHost()
+        host.configure("/gateway/mcp/")
+        calls = []
+
+        async def mcp_application(scope, receive, send):
+            calls.append(("mcp", scope))
+
+        async def django_application(scope, receive, send):
+            calls.append(("django", scope))
+
+        host._django_application = django_application
+        host._mcp_application = mcp_application
+
+        await host._dispatch(
+            {"type": "http", "path": "/gateway/mcp/", "raw_path": b"/gateway/mcp/"},
+            None,
+            None,
+        )
+        await host._dispatch(
+            {"type": "http", "path": "/api/items", "raw_path": b"/api/items"},
+            None,
+            None,
+        )
+
+        self.assertEqual(calls[0][0], "mcp")
+        self.assertEqual(calls[0][1]["path"], "/")
+        self.assertEqual(calls[1][0], "django")
+        with self.assertRaisesRegex(RuntimeError, "before initialization"):
+            host.configure("/other/mcp")
+        with self.assertRaisesRegex(ValueError, "description prefix"):
+            MCPHost().configure(description_prefix=None)
 
     async def test_mcp_can_execute_async_discovery_and_operations(self):
         registry = NinjaMCARouter(Router())
@@ -89,31 +193,28 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
             return {"kind": "sync"}
 
         host = MCPHost()
-
-        discovery = await host._call_route(
+        host.register(
             registry,
             "items",
-            "GET /",
+            api_base_path="/api/items",
+            description="Items API.",
+        )
+
+        discovery = await host._call_route(
+            "GET /api/items",
             None,
-            "/api/items",
         )
         self.assertIn("get_item", json.loads(discovery)["available_operations"])
 
         result = await host._call_route(
-            registry,
-            "items",
-            "GET /items/7",
+            "GET /api/items/items/7",
             None,
-            "/api/items",
         )
         self.assertEqual(json.loads(result), {"item_id": 7})
 
         sync_result = await host._call_route(
-            registry,
-            "items",
-            "GET /sync-items",
+            "GET /api/items/sync-items",
             None,
-            "/api/items",
         )
         self.assertEqual(json.loads(sync_result), {"kind": "sync"})
 
@@ -149,24 +250,24 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
             return {"invoice_id": invoice_id}
 
         host = MCPHost()
+        host.register(
+            registry,
+            "items",
+            api_base_path="/api/items",
+            description="Items API.",
+        )
         root = json.loads(
             await host._call_route(
-                registry,
-                "items",
-                "GET /",
+                "GET /api/items",
                 None,
-                "/api/items",
             )
         )
         self.assertIn("billing/invoices.md", root["available_guides"])
 
         details = json.loads(
             await host._call_route(
-                registry,
-                "items",
-                "GET /?operation=get_invoice",
+                "GET /api/items?operation=get_invoice",
                 None,
-                "/api/items",
             )
         )
         self.assertEqual(
@@ -179,13 +280,16 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         registry = _authenticated_registry()
 
         unauthenticated_host = MCPHost()
+        unauthenticated_host.register(
+            registry,
+            "items",
+            api_base_path="/api/items",
+            description="Items API.",
+        )
         with self.assertRaises(ToolError):
             await unauthenticated_host._call_route(
-                registry,
-                "items",
-                "GET /items",
+                "GET /api/items/items",
                 None,
-                "/api/items",
             )
 
         received_headers = {}
@@ -209,12 +313,15 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
             )
 
         host = MCPHost(request_context_factory=authenticated_context)
-        result = await host._call_route(
+        host.register(
             registry,
             "items",
-            "GET /items",
+            api_base_path="/api/items",
+            description="Items API.",
+        )
+        result = await host._call_route(
+            "GET /api/items/items",
             None,
-            "/api/items",
             request_headers={"X-MCP-Token": "trusted-principal"},
         )
         self.assertEqual(json.loads(result), {"principal": "trusted-principal"})
@@ -235,11 +342,17 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
             return RequestFactory().generic(method, path, headers=dict(request_headers))
 
         host = MCPHost(request_context_factory=authenticated_context)
-        server = host.build_server(registry, "items")
+        host.register(
+            registry,
+            "items",
+            api_base_path="/api/items",
+            description="Items API.",
+        )
+        server = host.build_server()
 
         result = await server.call_tool(
-            "items_api",
-            {"route": "GET /items"},
+            "mc_api",
+            {"route": "GET /api/items/items"},
             _mcp_context(server),
         )
 
@@ -250,11 +363,17 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         registry = _authenticated_registry()
 
         host = MCPHost()
-        server = host.build_server(registry, "items")
+        host.register(
+            registry,
+            "items",
+            api_base_path="/api/items",
+            description="Items API.",
+        )
+        server = host.build_server()
 
         result = await server.call_tool(
-            "items_api",
-            {"route": "GET /items"},
+            "mc_api",
+            {"route": "GET /api/items/items"},
             _mcp_context(server),
         )
 
