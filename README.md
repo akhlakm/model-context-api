@@ -205,9 +205,9 @@ guides can be requested with names such as `invoices/legacy_format.md`.
 
 With guides enabled, the root discovery response returns the registry metadata,
 available guide names, and a map of available operations. It also returns the
-optional index content when `index.md` exists. Guide and operation details are
-requested separately. Without guides, the response contains the registry
-metadata, help text, and available operations only:
+optional help content from `index.md` when it exists. Guide and operation
+details are requested separately. Without guides, the response contains the
+registry metadata, usage instructions, and available operations only:
 
 ~~~http
 GET /                         Root discovery
@@ -323,7 +323,7 @@ router = PydanticMCARouter(
     guides_dir=Path(__file__).with_name("guides"),
     title="Items API",
     version=1.0,
-    help="Use operation and guide discovery before calling an item route.",
+    usage="Use operation and guide discovery before calling an item route.",
 )
 
 

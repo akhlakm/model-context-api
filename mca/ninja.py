@@ -64,7 +64,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         mca_path: str = "/",
         title: str = "Model Context API",
         version: float = 1.0,
-        help: str | None = None,
+        usage: str | None = None,
         error_responses: Mapping[int, Any] | None = None,
     ):
         """Create a router bound to a Ninja ``API`` or ``Router`` instance.
@@ -80,7 +80,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             mca_path=mca_path,
             title=title,
             version=version,
-            help=help,
+            usage=usage,
         )
 
     def _discovery_endpoints(self) -> Iterable[tuple[str, str, F, Mapping[str, Any]]]:

@@ -197,7 +197,7 @@ class NinjaMCARouterPackageTests(TestCase):
 
     def test_guides_can_be_disabled_and_docstrings_describe_operations(self):
         api = FakeAPI()
-        router = NinjaMCARouter(api, help="Use operation discovery.")
+        router = NinjaMCARouter(api, usage="Use operation discovery.")
 
         @router.register("/documented")
         def get_documented():
@@ -213,8 +213,8 @@ class NinjaMCARouterPackageTests(TestCase):
         documented = router._route_schema(router.route("get_documented"))
         guided = router._route_schema(router.route("get_guided"))
 
-        self.assertEqual(discovery["help"], "Use operation discovery.")
-        self.assertNotIn("index", discovery)
+        self.assertEqual(discovery["usage"], "Use operation discovery.")
+        self.assertNotIn("help", discovery)
         self.assertNotIn("available_guides", discovery)
         self.assertEqual(documented["description"], "Read documented data.")
         self.assertNotIn("guides", guided)
@@ -228,7 +228,8 @@ class NinjaMCARouterPackageTests(TestCase):
 
             discovery = router._get_context(None, None)
 
-            self.assertNotIn("index", discovery)
+            self.assertNotIn("help", discovery)
+            self.assertIn("usage", discovery)
             self.assertEqual(discovery["available_guides"], ["workflow.md"])
 
     def test_route_schema_reads_openapi_document_once(self):

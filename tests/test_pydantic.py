@@ -29,7 +29,7 @@ class FakeMCAClient:
             return {
                 "title": "Billing API",
                 "version": 1.0,
-                "help": "Billing help.",
+                "usage": "Billing usage.",
                 "available_guides": ["index.md", "invoices.md"],
                 "available_operations": {
                     "get_invoice": "GET invoices/{invoice_id} - Read an invoice.",
@@ -127,8 +127,8 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertEqual(discovery.title, "Example API")
         self.assertEqual(discovery.version, 2.5)
 
-    def test_guides_can_be_disabled_and_help_can_be_overridden(self):
-        router = PydanticMCARouter(help="Use operation discovery.")
+    def test_guides_can_be_disabled_and_usage_can_be_overridden(self):
+        router = PydanticMCARouter(usage="Use operation discovery.")
 
         @router.register("/guided", guides=["workflow.md"])
         def get_guided() -> ItemOut:
@@ -137,8 +137,8 @@ class PydanticMCARouterPackageTests(TestCase):
 
         discovery = router.dispatch("get_context")
         details = router.dispatch("get_context", params={"operation": "get_guided"})
-        self.assertEqual(discovery.help, "Use operation discovery.")
-        self.assertNotIn("index", discovery.model_dump())
+        self.assertEqual(discovery.usage, "Use operation discovery.")
+        self.assertNotIn("help", discovery.model_dump())
         self.assertNotIn("available_guides", discovery.model_dump())
         self.assertNotIn("guides", details.operations["get_guided"].model_dump())
         with self.assertRaises(MCAError) as context:
@@ -154,7 +154,8 @@ class PydanticMCARouterPackageTests(TestCase):
             discovery = router.dispatch("get_context")
             payload = discovery.model_dump()
 
-            self.assertNotIn("index", payload)
+            self.assertNotIn("help", payload)
+            self.assertIn("usage", payload)
             self.assertEqual(payload["available_guides"], ["workflow.md"])
 
     def test_operation_schema_can_list_relevant_guides(self):
@@ -234,7 +235,7 @@ class PydanticMCARouterPackageTests(TestCase):
             params={"item_id": 7},
         )
         self.assertEqual(discovery.title, "Model Context API")
-        self.assertEqual(discovery.index, "# MCA")
+        self.assertEqual(discovery.help, "# MCA")
         self.assertIn("billing/invoices.md", discovery.available_guides)
         self.assertEqual(
             discovery.available_operations["get_public_invoice"],

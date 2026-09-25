@@ -58,7 +58,7 @@ class InvoiceDeletedOut(BaseModel):
 private_router = PydanticMCARouter(
     guides_dir=EXAMPLE_ROOT / "private_guides",
     title="Private Billing Service",
-    help="Use operation discovery before calling private billing operations.",
+    usage="Use operation discovery before calling private billing operations.",
 )
 
 

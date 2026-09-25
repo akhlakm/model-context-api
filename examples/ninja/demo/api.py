@@ -22,7 +22,7 @@ public_mca = NinjaMCARouter(
     public_router,
     guides_dir=EXAMPLE_ROOT / "guides",
     title="Public Invoice API",
-    help="Discover public operations and guides before requesting an invoice.",
+    usage="Discover public operations and guides before requesting an invoice.",
 )
 public_mca.mount("billing", billing_rpc)
 

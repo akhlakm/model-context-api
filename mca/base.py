@@ -125,19 +125,19 @@ class BaseMCARouter:
         mca_path: str = "/",
         title: str = "Model Context API",
         version: float = 1.0,
-        help: str | None = None,
+        usage: str | None = None,
     ):
         """Initialize a router and register its adapter-specific discovery endpoint.
 
         ``guides_dir`` enables Markdown discovery, ``mca_path`` controls the
-        discovery route, and ``title``, ``version``, and ``help`` populate the
+        discovery route, and ``title``, ``version``, and ``usage`` populate the
         root discovery document.
         """
         self.guide_catalog = GuideCatalog(guides_dir)
         self.mca_path = mca_path
         self.title = title
         self.version = version
-        self.help = help
+        self.usage = usage
         self._routes: dict[str, RegisteredRoute] = {}
         for path, operation_id, endpoint, options in self._discovery_endpoints():
             self._register_endpoint(path, operation_id, endpoint, options)
@@ -498,7 +498,7 @@ class BaseMCARouter:
             result = {
                 "title": self.title,
                 "version": self.version,
-                "help": self.help if self.help is not None else self._default_help(),
+                "usage": self.usage if self.usage is not None else self._default_usage(),
                 "available_operations": dict(
                     sorted(
                         (
@@ -514,7 +514,7 @@ class BaseMCARouter:
             if self.guide_catalog.enabled:
                 available_guides = self.guide_catalog.available()
                 if "index.md" in available_guides:
-                    result["index"] = self.guide_catalog.read("index.md")["index.md"]
+                    result["help"] = self.guide_catalog.read("index.md")["index.md"]
                 result["available_guides"] = available_guides
             return result
 
@@ -553,7 +553,7 @@ class BaseMCARouter:
             result = {
                 "title": self.title,
                 "version": self.version,
-                "help": self.help if self.help is not None else self._default_help(),
+                "usage": self.usage if self.usage is not None else self._default_usage(),
                 "available_operations": dict(
                     sorted(
                         (
@@ -569,7 +569,7 @@ class BaseMCARouter:
             if self.guide_catalog.enabled:
                 available_guides = self.guide_catalog.available()
                 if "index.md" in available_guides:
-                    result["index"] = self.guide_catalog.read("index.md")["index.md"]
+                    result["help"] = self.guide_catalog.read("index.md")["index.md"]
                 result["available_guides"] = available_guides
             return result
 
@@ -594,8 +594,8 @@ class BaseMCARouter:
             result["operations"] = operations
         return result
 
-    def _default_help(self) -> str:
-        """Return default client instructions based on guide availability."""
+    def _default_usage(self) -> str:
+        """Return default client usage instructions based on guide availability."""
         if self.guide_catalog.enabled:
             return (
                 "Use GET /?guide={names} and/or GET /?operation={names} with "

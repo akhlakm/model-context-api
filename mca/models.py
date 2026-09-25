@@ -20,12 +20,12 @@ class MCAResponseOut(BaseModel):
 
     title: str = Field(..., description="Title of the Model Context API discovery document.")
     version: float = Field(..., description="Version of the discovery document format.")
-    index: str | None = Field(
+    help: str | None = Field(
         None,
         exclude_if=lambda value: value is None,
-        description="Markdown index describing the available API guides.",
+        description="Markdown help content from the optional index guide.",
     )
-    help: str = Field(..., description="Instructions for requesting guide and schema details.")
+    usage: str = Field(..., description="Instructions for requesting guide and schema details.")
     available_guides: list[str] | None = Field(
         None,
         exclude_if=lambda value: value is None,

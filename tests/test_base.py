@@ -72,6 +72,8 @@ class BaseMCARouterTests(TestCase):
             )
             self.assertEqual(router.route("get_context").discovery_route, "GET .")
             discovery = router.discovery(None, None, lambda route: route.relative_route)
+            self.assertEqual(discovery["help"], "# MCA")
+            self.assertIn("Use GET /?guide={names}", discovery["usage"])
             self.assertEqual(
                 discovery["available_operations"]["get_item"],
                 "GET items/{item_id} - Get item",
@@ -110,11 +112,12 @@ class BaseMCARouterTests(TestCase):
 
             discovery = router.discovery(None, None, lambda route: route.relative_route)
 
-            self.assertNotIn("index", discovery)
+            self.assertNotIn("help", discovery)
+            self.assertIn("usage", discovery)
             self.assertEqual(discovery["available_guides"], ["workflow.md"])
 
-    def test_guides_can_be_disabled_and_help_can_be_overridden(self):
-        router = FakeMCARouter(None, help="Use operation discovery.")
+    def test_guides_can_be_disabled_and_usage_can_be_overridden(self):
+        router = FakeMCARouter(None, usage="Use operation discovery.")
 
         @router.register("/guided", guides=["workflow.md"])
         def get_guided():
@@ -123,8 +126,8 @@ class BaseMCARouterTests(TestCase):
 
         discovery = router.discovery(None, None, lambda route: route.relative_route)
 
-        self.assertEqual(discovery["help"], "Use operation discovery.")
-        self.assertNotIn("index", discovery)
+        self.assertEqual(discovery["usage"], "Use operation discovery.")
+        self.assertNotIn("help", discovery)
         self.assertNotIn("available_guides", discovery)
         self.assertEqual(
             discovery["available_operations"]["get_guided"],
