@@ -14,6 +14,9 @@ and caches the private request and response schemas in one batched RPC request,
 then uses them for generic public body and response schemas while retaining the
 public HTTP route and path/query parameters.
 
+For detailed adapter and MCP usage, see [Django Ninja APIs](../../docs/ninja.md)
+and [MCP hosting](../../docs/mcp.md).
+
 From the repository root, install the Ninja and MCP extras if needed and run
 Django's system check:
 
