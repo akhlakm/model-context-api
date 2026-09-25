@@ -64,6 +64,15 @@ class _HydratingAuth:
         return "mcp-principal"
 
 
+class _RaisingAuth:
+    async def __call__(self, request):
+        raise RuntimeError("auth service unavailable")
+
+
+lazy_auth = _HydratingAuth()
+lazy_non_callable = "not an auth callback"
+
+
 def _hydrated_registry(*, auth=None, async_endpoint=True):
     registry = NinjaMCARouter(Router() if auth is None else Router(auth=auth))
 
@@ -219,6 +228,50 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         with self.assertRaises(ToolError):
             await host._call_route("GET /api/items/items", None)
 
+    async def test_async_auth_exception_on_sync_handler_is_propagated(self):
+        host = MCPHost()
+        host.configure(auth=_RaisingAuth())
+        host.register(
+            _hydrated_registry(async_endpoint=False),
+            api_base_path="/api/items",
+            description="Items API.",
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "auth service unavailable"):
+            await host._call_route("GET /api/items/items", None)
+
+    async def test_configured_auth_path_resolves_lazily(self):
+        lazy_auth.requests.clear()
+        host = MCPHost()
+        host.configure(auth_path=f"{__name__}.lazy_auth")
+        host.register(
+            _hydrated_registry(),
+            api_base_path="/api/items",
+            description="Items API.",
+        )
+
+        self.assertIsNone(host._mcp_auth)
+        result = await host._call_route(
+            "GET /api/items/items",
+            None,
+            request_headers={"Authorization": "Bearer trusted-token"},
+        )
+
+        self.assertEqual(json.loads(result)["auth"], "mcp-principal")
+        self.assertEqual(len(lazy_auth.requests), 1)
+
+    async def test_configured_auth_path_rejects_non_callable_exports(self):
+        host = MCPHost()
+        host.configure(auth_path=f"{__name__}.lazy_non_callable")
+        host.register(
+            _hydrated_registry(),
+            api_base_path="/api/items",
+            description="Items API.",
+        )
+
+        with self.assertRaisesRegex(TypeError, "callable"):
+            await host._call_route("GET /api/items/items", None)
+
     async def test_mcp_auth_replaces_operation_auth_without_changing_normal_execution(self):
         normal_calls = []
 
@@ -254,6 +307,15 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
     async def test_configure_rejects_non_callable_auth(self):
         with self.assertRaisesRegex(TypeError, "callable"):
             MCPHost().configure(auth="not-a-callback")
+
+        with self.assertRaisesRegex(ValueError, "auth or auth_path"):
+            MCPHost().configure(
+                auth=_HydratingAuth(),
+                auth_path=f"{__name__}.lazy_auth",
+            )
+
+        with self.assertRaisesRegex(ValueError, "dotted"):
+            MCPHost().configure(auth_path="lazy_auth")
 
     async def test_manual_registration_rejects_duplicate_and_overlapping_api_paths(self):
         registry = NinjaMCARouter(Router())

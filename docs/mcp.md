@@ -171,6 +171,23 @@ mcp_host.configure(
 )
 ~~~
 
+If importing the callback module requires Django's app registry, defer the
+import until after Django initializes by using its dotted path:
+
+~~~python
+from mca.mcp import mcp_host
+
+mcp_host.configure(
+    mount_path="/api/v2/mcp",
+    auth_path="core.auth.jwt_auth",
+)
+~~~
+
+The path must identify an already-constructed callable export. The MCP host
+resolves it after Django initialization. Applications that import the callback
+directly must initialize Django before the import, for example with
+`django.setup()` in an ASGI entry point.
+
 The callback runs as Ninja operation authentication on the final request passed
 to each handler, including discovery. It can populate `request.user`,
 `request.auth`, or application-specific fields such as `request.token_log` and

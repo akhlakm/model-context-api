@@ -39,5 +39,6 @@ therefore be handled by the same Ninja authentication code as normal HTTP
 requests. Use `MCPHost.configure(auth=...)` when all MCP-exposed registries
 share one authentication callback; it runs at Ninja operation level and can
 hydrate the request with application-specific authentication fields. Use
-`request_context_factory` when an application instead needs custom user,
-session, or credential translation.
+`auth_path="package.auth.callback"` when importing the callback requires
+Django's app registry during startup. Use `request_context_factory` when an
+application instead needs custom user, session, or credential translation.

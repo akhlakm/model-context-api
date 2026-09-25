@@ -235,20 +235,42 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         handlers.
         """
         route = self.route(operation)
-        ninja_operation = self._ninja_operation(route.operation, auth=auth)
         if allow_anonymous:
             request._mca_allow_anonymous = True
             request._dont_enforce_csrf_checks = True
 
         operation_kwargs = dict(path_params or {})
-        if auth is not None and is_async_callable(auth) and not inspect.iscoroutinefunction(
-            ninja_operation.view_func
-        ):
+        original_operation = self._ninja_operation(route.operation)
+        is_async_operation = getattr(
+            original_operation,
+            "is_async",
+            inspect.iscoroutinefunction(original_operation.view_func),
+        )
+        if auth is not None and is_async_callable(auth) and not is_async_operation:
+            try:
+                auth_result = auth(request)
+                if inspect.isawaitable(auth_result):
+                    auth_result = await auth_result
+            except Exception as exc:
+
+                def replay_auth(_request: HttpRequest, error: Exception = exc) -> Any:
+                    raise error
+
+            else:
+
+                def replay_auth(_request: HttpRequest, result: Any = auth_result) -> Any:
+                    return result
+
+            ninja_operation = self._ninja_operation(
+                route.operation,
+                auth=replay_auth,
+            )
             response = await sync_to_async(
                 ninja_operation.run,
                 thread_sensitive=True,
             )(request, **operation_kwargs)
         else:
+            ninja_operation = self._ninja_operation(route.operation, auth=auth)
             response = ninja_operation.run(request, **operation_kwargs)
         if inspect.isawaitable(response):
             return await response

@@ -63,6 +63,7 @@ class MCPHost:
         self._registrations: tuple[MCPRegistration, ...] = ()
         self.request_context_factory = request_context_factory
         self._mcp_auth: MCPAuthCallback | None = None
+        self._mcp_auth_path: str | None = None
         self._mcp_path = self._normalize_path("/mcp")
         self._description_prefix = ""
 
@@ -72,25 +73,52 @@ class MCPHost:
         description_prefix: str = "",
         *,
         auth: MCPAuthCallback | None = None,
+        auth_path: str | None = None,
     ) -> None:
-        """Configure the MCP endpoint, optional shared auth, and tool context.
+        """Configure the MCP endpoint, shared auth, and tool context.
 
         ``auth`` is passed to each registered Ninja operation only during MCP
         execution. It may be synchronous or asynchronous and receives the
         final synthetic Django request used by the operation.
+
+        ``auth_path`` is a dotted import path for an authentication callback.
+        It is resolved after Django initializes, which allows authentication
+        modules that import Django models during startup.
         """
         if not isinstance(description_prefix, str):
             raise ValueError("MCP tool description prefix must be a string.")
         if auth is not None and not callable(auth):
             raise TypeError("MCP auth must be callable or None.")
+        if auth is not None and auth_path is not None:
+            raise ValueError("Configure MCP auth with auth or auth_path, not both.")
+        if auth_path is not None:
+            if not isinstance(auth_path, str) or not auth_path.strip() or "." not in auth_path:
+                raise ValueError("MCP auth_path must be a non-empty dotted import path.")
         if self._django_application is not None or self._mcp_server is not None:
             raise RuntimeError("MCP host must be configured before initialization.")
         self._mcp_path = self._normalize_path(mount_path)
         self._description_prefix = description_prefix.strip()
         self._mcp_auth = auth
+        self._mcp_auth_path = auth_path.strip() if auth_path is not None else None
         self._registrations = tuple(
             replace(registration, auth=auth) for registration in self._registrations
         )
+
+    def _resolve_mcp_auth(self) -> MCPAuthCallback | None:
+        """Resolve a deferred MCP auth callback after Django initialization."""
+        if self._mcp_auth_path is None or self._mcp_auth is not None:
+            return self._mcp_auth
+
+        from django.utils.module_loading import import_string
+
+        auth = import_string(self._mcp_auth_path)
+        if not callable(auth):
+            raise TypeError(f"MCP auth path '{self._mcp_auth_path}' did not resolve to a callable.")
+        self._mcp_auth = auth
+        self._registrations = tuple(
+            replace(registration, auth=auth) for registration in self._registrations
+        )
+        return auth
 
     @staticmethod
     def _normalize_path(path: str) -> str:
@@ -309,6 +337,9 @@ class MCPHost:
             )
 
         operation, path_params = resolved
+        auth = registration.auth
+        if auth is None:
+            auth = self._resolve_mcp_auth()
         return await self._call_operation(
             registration.registry,
             operation,
@@ -318,7 +349,7 @@ class MCPHost:
             query_params,
             body,
             request_headers,
-            registration.auth,
+            auth,
         )
 
     def _tool_description(self) -> str:
@@ -416,6 +447,7 @@ class MCPHost:
         from django.core.asgi import get_asgi_application
 
         self._django_application = get_asgi_application()
+        self._resolve_mcp_auth()
         self.build_server()
         self._mcp_application = self._mcp_server.streamable_http_app(
             streamable_http_path="/",
