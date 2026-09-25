@@ -6,6 +6,7 @@ guide. Use these topic guides for detailed API and integration reference:
 - [Guides and discovery](discovery.md)
 - [Pydantic APIs](pydantic.md)
 - [Django Ninja APIs](ninja.md)
+- [Composing MCA services](composition.md)
 - [MCP hosting](mcp.md)
 - [Errors and authentication](errors-and-authentication.md)
 - [API reference](api-reference.md)
