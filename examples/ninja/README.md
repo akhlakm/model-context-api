@@ -37,6 +37,9 @@ curl 'http://127.0.0.1:8000/api/?guide=billing/invoices.md'
 curl 'http://127.0.0.1:8000/api/?guide=billing/invoices/legacy_format.md'
 ```
 
+The root discovery response returns the public `guides/index.md` content as
+`help` and the configured router instructions as `usage`.
+
 Call the public GET operation with the demo token:
 
 ```bash

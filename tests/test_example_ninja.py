@@ -38,6 +38,16 @@ class NinjaCompositionExampleTests(TestCase):
         discovery = public_mca._get_context(None, None)
 
         self.assertEqual(
+            discovery["help"],
+            "# Public Invoice API\n\n"
+            "Start with the public operation discovery document, then read the invoice\n"
+            "guide before requesting an invoice.\n",
+        )
+        self.assertEqual(
+            discovery["usage"],
+            "Discover public operations and guides before requesting an invoice.",
+        )
+        self.assertEqual(
             set(discovery["available_operations"]),
             {
                 "get_public_invoice",
