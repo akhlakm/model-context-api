@@ -244,8 +244,52 @@ define the application's authentication policy.
 
 ### Connect from Codex CLI with an API token
 
-Codex CLI can attach a bearer token to every request made to a Streamable HTTP
-MCP server. Store the token in an environment variable and register the server:
+The recommended Codex setup uses a local `http_headers_helper`. Current Codex
+versions have bugs in their bearer-token environment-variable support, while a
+helper gives Codex the header explicitly for each MCP HTTP request.
+
+The helper should print one JSON object containing the headers Codex should add
+to MCP HTTP requests. This example reads the raw token from a protected file:
+
+~~~sh
+#!/bin/sh
+set -eu
+
+token_file="/absolute/path/to/API_TOKEN"
+token="$(tr -d '\r\n' < "$token_file")"
+printf '{"Authorization":"Bearer %s"}\n' "$token"
+~~~
+
+Save the script as an executable file and keep the token file readable only by
+the user:
+
+~~~bash
+chmod 700 /absolute/path/to/mca-mcp-headers
+chmod 600 /absolute/path/to/API_TOKEN
+~~~
+
+Register the server through the Codex CLI. The `-c` option sets the nested
+configuration value, so no manual editing of `config.toml` is needed:
+
+~~~bash
+codex mcp add my-mca \
+    --url https://your-host.example.com/mcp \
+    -c 'mcp_servers.my-mca.http_headers_helper="/absolute/path/to/mca-mcp-headers"'
+
+codex mcp get my-mca
+codex mcp list
+~~~
+
+The token file in this example contains only the raw token, not an
+`API_TOKEN=...` assignment. The helper must print only valid JSON on stdout;
+Codex uses the resulting `Authorization: Bearer <token>` header for MCP
+initialization and tool calls. This option is supported for locally connected
+HTTP MCP servers; see the
+[Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)
+for the full setting definition.
+
+Codex also supports attaching a bearer token from an environment variable, but
+this option is currently unreliable and should be treated as a fallback:
 
 ~~~bash
 export MCA_API_TOKEN='your-api-token'
@@ -259,8 +303,9 @@ codex mcp list
 
 Start or restart Codex from the environment where `MCA_API_TOKEN` is set. Codex
 sends the token as `Authorization: Bearer <token>` during MCP initialization and
-subsequent tool calls. The token value is not written into the Codex server
-configuration; only the environment-variable name is configured.
+subsequent tool calls when the environment-variable integration works. The
+token value is not written into the Codex server configuration; only the
+environment-variable name is configured.
 
 After the server connects, invoke the shared tool normally, using the full REST
 API route rather than the MCP mount path:
