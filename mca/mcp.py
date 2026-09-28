@@ -14,6 +14,7 @@ from django.http import HttpRequest
 from mcp.server import MCPServer
 from mcp.server.mcpserver.context import Context as MCPContext
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.types import Tool as MCPTool
 
 from .base import MCAError
 from .ninja import MCAExecutionError, NinjaMCARouter
@@ -36,6 +37,22 @@ class MCPRegistration:
     description: str
     registry: NinjaMCARouter
     auth: MCPAuthCallback | None = None
+
+
+class _DynamicMCPServer(MCPServer):
+    """MCP server whose shared tool description reflects current registrations."""
+
+    def __init__(self, description_factory: Callable[[], str]):
+        self._description_factory = description_factory
+        super().__init__("MCA API")
+
+    async def list_tools(self) -> list[MCPTool]:
+        """Return tool metadata with the current MCA API description."""
+        tools = await super().list_tools()
+        for tool in tools:
+            if tool.name == MCP_TOOL_NAME:
+                tool.description = self._description_factory()
+        return tools
 
 
 class MCPHost:
@@ -151,14 +168,13 @@ class MCPHost:
         api_base_path: str,
         description: str,
     ) -> MCPRegistration:
-        """Register one MCA router before the host starts serving requests.
+        """Register one MCA router with the shared MCP API tool.
 
         ``api_base_path`` is the complete URL prefix where the router is
         mounted by Django and Ninja. The required description is included in
-        the shared ``mc_api`` tool description.
+        the shared ``mc_api`` tool description. Registrations may be added
+        before or after the host initializes.
         """
-        if self._django_application is not None or self._mcp_server is not None:
-            raise RuntimeError("MCA APIs must be registered before host initialization.")
         if not isinstance(registry, NinjaMCARouter):
             raise TypeError("registry must be a NinjaMCARouter.")
         if not isinstance(description, str) or not description.strip():
@@ -376,7 +392,7 @@ class MCPHost:
         if self._mcp_server is not None:
             return self._mcp_server
 
-        server = MCPServer("MCA API")
+        server = _DynamicMCPServer(self._tool_description)
 
         @server.tool(
             name=MCP_TOOL_NAME,

@@ -12,9 +12,10 @@ registered by the application. Use direct HTTP when the client can reach the
 REST API and should use its normal authentication. Use MCP when the client
 needs a tool-oriented connection or only has access to the MCP endpoint.
 
-Each application registers its own router from its `api.py` module. The module
-must be imported during Django startup, normally through the application's URL
-configuration or `AppConfig.ready()`:
+Each application registers its own router when the router is constructed. An
+`api.py` import during Django startup is a common arrangement, but it is not
+required: the host accepts valid registrations after Django and MCP have
+initialized as well.
 
 ~~~python
 # myapp/api.py
@@ -52,6 +53,9 @@ REST API base paths:     the paths registered by each app
 All other paths are passed to Django's normal ASGI application. The host
 initializes Django, owns the MCP session-manager lifespan, and mounts one
 stateless Streamable HTTP application for all explicitly registered routers.
+Registrations added later are immediately available for routing and appear in
+subsequent `tools/list` results. Clients that cache tool metadata should refresh
+their tool list after a late registration.
 
 ## Configure the MCP mount and description
 

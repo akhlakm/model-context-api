@@ -129,12 +129,23 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         )
         self.assertIn("/api/v2/items: Public item API.", tools[0].description)
         self.assertIn("/billing: Billing API.", tools[0].description)
-        with self.assertRaisesRegex(RuntimeError, "before host initialization"):
-            host.register(
-                registry,
-                api_base_path="/api/v2/late",
-                description="Late API.",
-            )
+
+        late_registry = NinjaMCARouter(Router())
+
+        @late_registry.register("/items", response=dict)
+        def get_late_items(request):
+            return {"api": "late"}
+
+        host.register(
+            late_registry,
+            api_base_path="/api/v2/late",
+            description="Late API.",
+        )
+
+        tools = await host.build_server().list_tools()
+        self.assertIn("/api/v2/late: Late API.", tools[0].description)
+        result = await host._call_route("GET /api/v2/late/items", None)
+        self.assertEqual(json.loads(result), {"api": "late"})
 
     async def test_configured_auth_hydrates_the_operation_request(self):
         auth = _HydratingAuth()
