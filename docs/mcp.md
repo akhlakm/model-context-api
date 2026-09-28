@@ -106,6 +106,32 @@ The MCP host does not infer these paths from a root NinjaAPI. Register the
 complete mount path explicitly so composition remains correct when separate
 apps are mounted at different versions or prefixes.
 
+## Alternative: Build one MCP server directly
+
+Applications that want to mount the shared API tool without using the `MCPHost`
+ASGI wrapper can build the MCP server directly:
+
+~~~python
+from mca.mcp import MCPHost
+from myapp.api import mca_registry
+
+host = MCPHost()
+host.register(
+    mca_registry,
+    api_base_path="/api/items",
+    description="Public item API.",
+)
+server = host.build_server()
+application = server.streamable_http_app(
+    streamable_http_path="/",
+    stateless_http=True,
+)
+~~~
+
+The resulting server exposes the `mc_api` tool. The surrounding ASGI
+application is responsible for starting the server's session manager and for
+providing Django settings.
+
 ## Use the `mc_api` tool
 
 The tool accepts a full API HTTP-style route and an optional JSON body:
@@ -205,28 +231,90 @@ Successful results are returned as JSON text. A 204 response is represented as
 errors are returned as MCP tool errors containing the MCA error code, detail,
 field, and HTTP status.
 
-## Build one MCP server directly
+## Connect MCP clients with an API token
 
-Applications that want to mount the shared API tool without using the `MCPHost`
-ASGI wrapper can build the MCP server directly:
+Once the server has configured an `auth` or `auth_path` callback to validate
+the bearer token, clients can attach the token to their Streamable HTTP MCP
+connection. The client configuration supplies the HTTP header; it does not
+define the application's authentication policy.
 
-~~~python
-from mca.mcp import MCPHost
-from myapp.api import mca_registry
+### Connect from Codex CLI with an API token
 
-host = MCPHost()
-host.register(
-    mca_registry,
-    api_base_path="/api/items",
-    description="Public item API.",
-)
-server = host.build_server()
-application = server.streamable_http_app(
-    streamable_http_path="/",
-    stateless_http=True,
-)
+Codex CLI can attach a bearer token to every request made to a Streamable HTTP
+MCP server. Store the token in an environment variable and register the server:
+
+~~~bash
+export MCA_API_TOKEN='your-api-token'
+
+codex mcp add my-mca \
+    --url https://your-host.example.com/mcp \
+    --bearer-token-env-var MCA_API_TOKEN
+
+codex mcp list
 ~~~
 
-The resulting server exposes the `mc_api` tool. The surrounding ASGI
-application is responsible for starting the server's session manager and for
-providing Django settings.
+Start or restart Codex from the environment where `MCA_API_TOKEN` is set. Codex
+sends the token as `Authorization: Bearer <token>` during MCP initialization and
+subsequent tool calls. The token value is not written into the Codex server
+configuration; only the environment-variable name is configured.
+
+After the server connects, invoke the shared tool normally, using the full REST
+API route rather than the MCP mount path:
+
+~~~text
+mc_api(route="GET /api/items")
+mc_api(route="GET /api/items/items/7")
+~~~
+
+### Connect from Claude Code with an API token
+
+Claude Code can configure a remote HTTP MCP server with a bearer token expanded
+from an environment variable:
+
+~~~bash
+export MCA_API_TOKEN='your-api-token'
+
+claude mcp add-json my-mca \
+    '{"type":"http","url":"https://your-host.example.com/mcp","headers":{"Authorization":"Bearer ${MCA_API_TOKEN}"}}'
+
+claude mcp get my-mca
+claude mcp list
+~~~
+
+The JSON is single-quoted so the shell leaves `${MCA_API_TOKEN}` for Claude Code
+to expand when it connects. Start or restart Claude Code from the environment
+where `MCA_API_TOKEN` is set, then use `/mcp` to inspect the connection. Use
+`--scope user` when the server should be available across projects; the default
+scope is local to the current project. See the
+[Claude Code MCP documentation](https://code.claude.com/docs/en/mcp) for other
+scopes and authentication options.
+
+### Connect from Pi CLI with an API token
+
+Pi can connect to this endpoint through the `pi-mcp-adapter` extension. Install
+the extension and export the token before starting Pi:
+
+~~~bash
+pi install npm:pi-mcp-adapter
+export MCA_API_TOKEN='your-api-token'
+~~~
+
+Add the server to the project's `.mcp.json`:
+
+~~~json
+{
+    "mcpServers": {
+        "my-mca": {
+            "url": "https://your-host.example.com/mcp",
+            "auth": "bearer",
+            "bearerTokenEnv": "MCA_API_TOKEN"
+        }
+    }
+}
+~~~
+
+Start or restart Pi and check the connection with `/mcp`. If the server uses
+lazy startup, connect it with `/mcp reconnect my-mca`. Pi sends the token as
+`Authorization: Bearer <token>` while keeping the token value out of the MCP
+configuration. See the [`pi-mcp-adapter` documentation](https://pi.dev/packages/pi-mcp-adapter)
+for global configuration and additional connection options.
