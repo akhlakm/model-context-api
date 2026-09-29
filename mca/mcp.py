@@ -2,31 +2,25 @@
 
 from __future__ import annotations
 
-import inspect
+import asyncio
 import json
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
+from http import HTTPStatus
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import unquote, urlsplit
 
-from django.http import HttpRequest
 from mcp.server import MCPServer
 from mcp.server.mcpserver.context import Context as MCPContext
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import Tool as MCPTool
 
 from .base import MCAError
-from .ninja import MCAExecutionError, NinjaMCARouter
-from .request import build_request
+from .ninja import NinjaMCARouter
 
 BODY_METHODS = {"POST", "PUT", "PATCH"}
 MCP_TOOL_NAME = "mc_api"
-RequestContextFactory = Callable[
-    [str, str, Mapping[str, Any], Mapping[str, Any], Any, Mapping[str, str]],
-    HttpRequest | None | Awaitable[HttpRequest | None],
-]
-MCPAuthCallback = Callable[[HttpRequest], Any]
 
 
 @dataclass(frozen=True)
@@ -36,7 +30,20 @@ class MCPRegistration:
     api_base_path: str
     description: str
     registry: NinjaMCARouter
-    auth: MCPAuthCallback | None = None
+
+
+@dataclass(frozen=True)
+class _DjangoResponse:
+    status_code: int
+    content: bytes
+    headers: tuple[tuple[bytes, bytes], ...]
+
+    @property
+    def reason_phrase(self) -> str:
+        try:
+            return HTTPStatus(self.status_code).phrase
+        except ValueError:
+            return "Unknown HTTP response"
 
 
 class _DynamicMCPServer(MCPServer):
@@ -62,25 +69,12 @@ class MCPHost:
     matching registered router and all other traffic to Django.
     """
 
-    def __init__(
-        self,
-        request_context_factory: RequestContextFactory | None = None,
-    ):
-        """Create an uninitialized host with one MCP endpoint.
-
-        ``request_context_factory`` may return a request carrying the user,
-        credentials, session, or headers that application authentication needs
-        for one MCP call. Its final argument contains the incoming MCP
-        transport headers. Without it, MCP transport headers are copied into a
-        synthetic Django request automatically.
-        """
+    def __init__(self):
+        """Create an uninitialized host with one MCP endpoint."""
         self._django_application: Any | None = None
         self._mcp_server: MCPServer | None = None
         self._mcp_application: Any | None = None
         self._registrations: tuple[MCPRegistration, ...] = ()
-        self.request_context_factory = request_context_factory
-        self._mcp_auth: MCPAuthCallback | None = None
-        self._mcp_auth_path: str | None = None
         self._mcp_path = self._normalize_path("/mcp")
         self._description_prefix = ""
 
@@ -88,54 +82,14 @@ class MCPHost:
         self,
         mount_path: str = "/mcp",
         description_prefix: str = "",
-        *,
-        auth: MCPAuthCallback | None = None,
-        auth_path: str | None = None,
     ) -> None:
-        """Configure the MCP endpoint, shared auth, and tool context.
-
-        ``auth`` is passed to each registered Ninja operation only during MCP
-        execution. It may be synchronous or asynchronous and receives the
-        final synthetic Django request used by the operation.
-
-        ``auth_path`` is a dotted import path for an authentication callback.
-        It is resolved after Django initializes, which allows authentication
-        modules that import Django models during startup.
-        """
+        """Configure the MCP endpoint and shared tool context."""
         if not isinstance(description_prefix, str):
             raise ValueError("MCP tool description prefix must be a string.")
-        if auth is not None and not callable(auth):
-            raise TypeError("MCP auth must be callable or None.")
-        if auth is not None and auth_path is not None:
-            raise ValueError("Configure MCP auth with auth or auth_path, not both.")
-        if auth_path is not None:
-            if not isinstance(auth_path, str) or not auth_path.strip() or "." not in auth_path:
-                raise ValueError("MCP auth_path must be a non-empty dotted import path.")
         if self._django_application is not None or self._mcp_server is not None:
             raise RuntimeError("MCP host must be configured before initialization.")
         self._mcp_path = self._normalize_path(mount_path)
         self._description_prefix = description_prefix.strip()
-        self._mcp_auth = auth
-        self._mcp_auth_path = auth_path.strip() if auth_path is not None else None
-        self._registrations = tuple(
-            replace(registration, auth=auth) for registration in self._registrations
-        )
-
-    def _resolve_mcp_auth(self) -> MCPAuthCallback | None:
-        """Resolve a deferred MCP auth callback after Django initialization."""
-        if self._mcp_auth_path is None or self._mcp_auth is not None:
-            return self._mcp_auth
-
-        from django.utils.module_loading import import_string
-
-        auth = import_string(self._mcp_auth_path)
-        if not callable(auth):
-            raise TypeError(f"MCP auth path '{self._mcp_auth_path}' did not resolve to a callable.")
-        self._mcp_auth = auth
-        self._registrations = tuple(
-            replace(registration, auth=auth) for registration in self._registrations
-        )
-        return auth
 
     @staticmethod
     def _normalize_path(path: str) -> str:
@@ -188,48 +142,59 @@ class MCPHost:
             base_path,
             description.strip(),
             registry,
-            self._mcp_auth,
         )
         self._registrations += (registration,)
         return registration
 
     @staticmethod
-    def _json_response(response: Any) -> Any:
+    def _json_response(response: _DjangoResponse) -> Any:
         """Decode a successful Django response, treating empty/204 as ``None``."""
         if response.status_code == 204 or not response.content:
             return None
         return json.loads(response.content)
 
     @staticmethod
-    def _tool_error(response: Any) -> ToolError:
+    def _tool_error(response: _DjangoResponse) -> ToolError:
         """Convert an HTTP error response into an MCP ``ToolError`` payload."""
         try:
             payload = json.loads(response.content)
         except (TypeError, ValueError, UnicodeDecodeError):
+            location = next(
+                (value.decode("latin1") for key, value in response.headers if key.lower() == b"location"),
+                None,
+            )
             payload = {
                 "code": "mcp_endpoint_error",
-                "detail": response.reason_phrase,
+                "detail": (
+                    f"{response.reason_phrase}: {location}" if location else response.reason_phrase
+                ),
             }
         if isinstance(payload, dict):
-            payload = {"status": response.status_code, **payload}
+            payload = {**payload, "status": response.status_code}
+        else:
+            payload = {
+                "code": "mcp_endpoint_error",
+                "detail": payload,
+                "status": response.status_code,
+            }
         return ToolError(json.dumps(payload, ensure_ascii=False))
 
     @staticmethod
-    def _request_headers(context: MCPContext | None) -> Mapping[str, str]:
-        """Return headers from the incoming MCP transport request, if present."""
+    def _transport_request(context: MCPContext | None) -> tuple[Mapping[str, str], Mapping[str, Any]]:
+        """Return incoming MCP headers and ASGI metadata, when available."""
         if context is None:
-            return {}
+            return {}, {}
         try:
             request = context.request_context.request
         except ValueError:
-            return {}
+            return {}, {}
         if request is None:
-            return {}
-        return request.headers
+            return {}, {}
+        return request.headers, getattr(request, "scope", {})
 
     @staticmethod
-    def _parse_route(route: str) -> tuple[str, str, dict[str, Any]]:
-        """Parse an MCP route argument into method, path, and query values."""
+    def _parse_route(route: str) -> tuple[str, str, str]:
+        """Parse an MCP route argument into method, path, and raw query."""
         if not isinstance(route, str) or not route.strip():
             raise MCAError("invalid_route", "Route must be a non-empty HTTP method and path.", "route")
 
@@ -254,12 +219,7 @@ class MCPHost:
             )
 
         path = parsed.path if parsed.path.startswith("/") else f"/{parsed.path}"
-        values = parse_qs(parsed.query, keep_blank_values=True)
-        query_params = {
-            key: values[0] if len(values) == 1 else values
-            for key, values in values.items()
-        }
-        return method, path, query_params
+        return method, path, parsed.query
 
     def _resolve_registration(self, path: str) -> tuple[MCPRegistration, str]:
         """Resolve a full API path to a registration and relative route."""
@@ -283,59 +243,96 @@ class MCPHost:
             404,
         )
 
-    async def _call_operation(
+    async def _call_django(
         self,
-        registry: NinjaMCARouter,
-        operation: str,
         method: str,
         path: str,
-        path_params: dict[str, Any],
-        query_params: dict[str, Any],
+        query: str,
         body: Any,
-        request_headers: Mapping[str, str] | None = None,
-        auth: MCPAuthCallback | None = None,
-    ) -> str:
-        """Invoke a resolved Ninja operation and serialize its JSON response."""
-        source_request = None
-        if self.request_context_factory is not None:
-            source_request = self.request_context_factory(
-                method,
-                path,
-                path_params,
-                query_params,
-                body,
-                request_headers or {},
-            )
-            if inspect.isawaitable(source_request):
-                source_request = await source_request
-        elif request_headers:
-            source_request = build_request(
-                method,
-                path,
-                headers=request_headers,
-            )
-
-        response = await registry.execute_http_request_async(
-            operation,
-            source_request=source_request,
-            path_params=path_params,
-            query_params=query_params,
-            body=body,
-            auth=auth,
+        request_headers: Mapping[str, str],
+        transport_scope: Mapping[str, Any],
+    ) -> _DjangoResponse:
+        """Send one API request through Django's normal ASGI handler."""
+        self._initialize()
+        request_body = (
+            json.dumps(body, ensure_ascii=False).encode("utf-8")
+            if body is not None else b""
         )
-        if response.status_code >= 400:
-            raise self._tool_error(response)
-        return json.dumps(self._json_response(response), ensure_ascii=False)
+        excluded_headers = {
+            "accept",
+            "connection",
+            "content-length",
+            "content-type",
+            "transfer-encoding",
+            "mcp-session-id",
+            "mcp-protocol-version",
+            "last-event-id",
+        }
+        headers = [
+            (name.lower().encode("latin1"), value.encode("latin1"))
+            for name, value in request_headers.items()
+            if name.lower() not in excluded_headers
+        ]
+        headers.append((b"accept", b"application/json"))
+        if body is not None:
+            headers.extend([
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(request_body)).encode("ascii")),
+            ])
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": transport_scope.get("http_version", "1.1"),
+            "method": method,
+            "scheme": transport_scope.get("scheme", "http"),
+            "path": unquote(path),
+            "raw_path": path.encode("utf-8"),
+            "root_path": transport_scope.get("_mca_root_path", transport_scope.get("root_path", "")),
+            "query_string": query.encode("utf-8"),
+            "headers": headers,
+            "server": transport_scope.get("server", ("localhost", 80)),
+            "client": transport_scope.get("client", ("127.0.0.1", 0)),
+        }
+        received = False
+        disconnect = asyncio.Event()
+
+        async def receive() -> dict[str, Any]:
+            nonlocal received
+            if not received:
+                received = True
+                return {"type": "http.request", "body": request_body, "more_body": False}
+            await disconnect.wait()
+            raise RuntimeError("Django requested another body message after completion.")
+
+        status: int | None = None
+        response_headers: tuple[tuple[bytes, bytes], ...] = ()
+        chunks: list[bytes] = []
+
+        async def send(message: dict[str, Any]) -> None:
+            nonlocal status, response_headers
+            if message["type"] == "http.response.start":
+                status = message["status"]
+                response_headers = tuple(message.get("headers", ()))
+            elif message["type"] == "http.response.body":
+                chunks.append(message.get("body", b""))
+
+        await self._django_application(scope, receive, send)
+        if status is None:
+            raise RuntimeError("Django did not return an HTTP response.")
+        return _DjangoResponse(status, b"".join(chunks), response_headers)
 
     async def _call_route(
         self,
         route: str,
         body: Any,
         request_headers: Mapping[str, str] | None = None,
+        transport_scope: Mapping[str, Any] | None = None,
     ) -> str:
         """Validate and resolve a full API route before execution."""
-        method, path, query_params = self._parse_route(route)
-        registration, relative_path = self._resolve_registration(path)
+        method, path, query = self._parse_route(route)
+        # ASGI passes a decoded path to Django's URL resolver. Check that same
+        # path against the MCA allowlist before dispatching it.
+        registration, relative_path = self._resolve_registration(unquote(path))
         if body is not None and method not in BODY_METHODS:
             raise MCAError(
                 "invalid_body",
@@ -343,8 +340,7 @@ class MCPHost:
                 "body",
             )
 
-        resolved = registration.registry.resolve(method, relative_path)
-        if resolved is None:
+        if registration.registry.resolve(method, relative_path) is None:
             raise MCAError(
                 "unknown_route",
                 f"No route matches {method} {path}.",
@@ -352,21 +348,23 @@ class MCPHost:
                 404,
             )
 
-        operation, path_params = resolved
-        auth = registration.auth
-        if auth is None:
-            auth = self._resolve_mcp_auth()
-        return await self._call_operation(
-            registration.registry,
-            operation,
-            method,
-            relative_path,
-            path_params,
-            query_params,
-            body,
-            request_headers,
-            auth,
+        response = await self._call_django(
+            method, path, query, body, request_headers or {}, transport_scope or {},
         )
+        if not 200 <= response.status_code < 300:
+            raise self._tool_error(response)
+        try:
+            return json.dumps(self._json_response(response), ensure_ascii=False)
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise ToolError(
+                json.dumps(
+                    {
+                        "code": "mcp_endpoint_error",
+                        "detail": "The API returned a non-JSON success response.",
+                        "status": response.status_code,
+                    }
+                )
+            ) from exc
 
     def _tool_description(self) -> str:
         """Build the shared tool description from registered API metadata."""
@@ -378,7 +376,8 @@ class MCPHost:
             api_list = "- No APIs are registered."
         generated_description = (
             "Call registered MCA APIs with a full HTTP-style route. "
-            "Use route='GET /api/path' for discovery or an operation, and pass "
+            "Use the exact mounted Django URL, such as route='GET /api/path/' "
+            "for discovery, and pass "
             "body for JSON request data. Results are JSON text; HTTP 204 responses "
             "return null. Registered API paths:\n"
             f"{api_list}"
@@ -406,10 +405,12 @@ class MCPHost:
         ) -> str:
             """Handle one MCP tool call using a full API route."""
             try:
+                request_headers, transport_scope = self._transport_request(context)
                 return await self._call_route(
                     route,
                     body,
-                    self._request_headers(context),
+                    request_headers,
+                    transport_scope,
                 )
             except MCAError as exc:
                 raise ToolError(
@@ -419,18 +420,6 @@ class MCPHost:
                             "detail": exc.detail,
                             "field": exc.field,
                             "status": exc.status,
-                        },
-                        ensure_ascii=False,
-                    )
-                ) from exc
-            except MCAExecutionError as exc:
-                raise ToolError(
-                    json.dumps(
-                        {
-                            "code": "execution_error",
-                            "detail": exc.detail,
-                            "field": "operation",
-                            "status": 500,
                         },
                         ensure_ascii=False,
                     )
@@ -450,6 +439,7 @@ class MCPHost:
                 mcp_scope = dict(scope)
                 mcp_scope["path"] = "/"
                 mcp_scope["raw_path"] = b"/"
+                mcp_scope["_mca_root_path"] = scope.get("root_path", "")
                 mcp_scope["root_path"] = ""
                 return await self._mcp_application(mcp_scope, receive, send)
 
@@ -463,7 +453,6 @@ class MCPHost:
         from django.core.asgi import get_asgi_application
 
         self._django_application = get_asgi_application()
-        self._resolve_mcp_auth()
         self.build_server()
         self._mcp_application = self._mcp_server.streamable_http_app(
             streamable_http_path="/",

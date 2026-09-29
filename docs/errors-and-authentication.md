@@ -28,17 +28,15 @@ tool error.
 
 ## Authentication
 
-MCA does not impose an authentication policy. Normal Ninja requests use the
-authentication configured on the NinjaAPI or route. Internal execution and MCP
-hosting can explicitly opt into an application's trusted anonymous mode, but
-that decision belongs to the application boundary.
+MCA does not impose an authentication policy. Ninja requests use the
+authentication configured on Django middleware, the NinjaAPI, or the route.
+Internal execution can explicitly opt into an application's trusted anonymous
+mode, but that decision belongs to the application boundary.
 
-For MCP requests, incoming transport headers are copied into the synthetic
-Django request used for dispatch. Header-based tokens and API keys can
-therefore be handled by the same Ninja authentication code as normal HTTP
-requests. Use `MCPHost.configure(auth=...)` when all MCP-exposed registries
-share one authentication callback; it runs at Ninja operation level and can
-hydrate the request with application-specific authentication fields. Use
-`auth_path="package.auth.callback"` when importing the callback requires
-Django's app registry during startup. Use `request_context_factory` when an
-application instead needs custom user, session, or credential translation.
+For MCP tool calls, incoming credentials and cookies are forwarded through
+Django's normal middleware and URL routing. Header-based tokens, API keys, and
+session authentication therefore follow the same rules as direct HTTP requests.
+The `/mcp` protocol endpoint and `tools/list` do not pass through Django
+middleware; each API route decides whether discovery and operations require
+authentication. Clients must supply credentials on each tool call, because
+cookies set by an API response are not relayed through the MCP result.

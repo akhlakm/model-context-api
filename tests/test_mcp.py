@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from typing import Any
 from unittest import IsolatedAsyncioTestCase
 
 from django.conf import settings
@@ -15,374 +16,282 @@ import django
 
 django.setup()
 
-from django.test import RequestFactory
+from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
+from django.test import RequestFactory, override_settings
+from django.urls import path
+from django.utils.deprecation import MiddlewareMixin
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
-from ninja import Router
+from ninja import Body, NinjaAPI, Router
 
 from mca.base import MCAError
 from mca.mcp import MCPHost
 from mca.ninja import NinjaMCARouter
 
+middleware_events = []
+operation_calls = []
 
-def _authenticated_registry():
-    def authenticate(request):
-        return request.headers.get("X-MCP-Token")
 
-    registry = NinjaMCARouter(Router(auth=authenticate))
+class TrackingMiddleware(MiddlewareMixin):
+    def process_request(self, request):
+        middleware_events.append(("request", request.path))
+        request.middleware_marker = "passed"
+        if request.headers.get("X-Block"):
+            return JsonResponse({"code": "blocked", "detail": "Rejected by middleware."}, status=403)
+        if request.headers.get("X-Redirect"):
+            return HttpResponseRedirect("/api/items/")
+        if request.headers.get("X-Plain"):
+            return HttpResponse("plain text")
+        if request.headers.get("X-Empty"):
+            return HttpResponse(status=204)
+        return None
 
-    @registry.register("/items", response=dict)
-    def get_items(request):
-        return {"principal": request.auth}
+    def process_view(self, request, view_func, view_args, view_kwargs):
+        middleware_events.append(("view", request.path))
+        if request.headers.get("X-View-Block"):
+            return JsonResponse({"code": "view_blocked"}, status=403)
+        return None
 
-    return registry
+    def process_response(self, request, response):
+        middleware_events.append(("response", response.status_code))
+        response["X-Middleware"] = "passed"
+        return response
+
+
+def authenticate(request):
+    token = request.headers.get("X-MCP-Token")
+    return token if token == "trusted-principal" else None
+
+
+items_registry = NinjaMCARouter(Router())
+
+
+@items_registry.register("/items", response=dict, auth=authenticate)
+def get_items(request):
+    operation_calls.append("get_items")
+    return {
+        "principal": request.auth,
+        "middleware": getattr(request, "middleware_marker", None),
+        "cookie": request.COOKIES.get("sessionid"),
+        "client": request.META.get("REMOTE_ADDR"),
+    }
+
+
+@items_registry.register("/async-items/{item_id}", response=dict)
+async def get_async_item(request, item_id: int):
+    return {"item_id": item_id}
+
+
+@items_registry.register("/query", response=dict)
+def get_query(request):
+    return {"tags": request.GET.getlist("tag"), "empty": request.GET.get("empty")}
+
+
+@items_registry.register("/echo", response=dict)
+def make_echo(request, payload: dict[str, Any] = Body(...)):
+    return {"payload": payload, "tag": request.GET.get("tag")}
+
+
+@items_registry.register("/error", response=dict)
+def get_error(request):
+    raise MCAError("item_missing", "The item does not exist.", status=404)
+
+
+billing_registry = NinjaMCARouter(Router())
+
+
+@billing_registry.register("/invoices", response=dict)
+def get_invoices(request):
+    return {"api": "billing"}
+
+
+api = NinjaAPI(title="MCP test API", urls_namespace="mcp-test-api")
+api.add_router("/api/items", items_registry.api)
+api.add_router("/billing", billing_registry.api)
+urlpatterns = [path("", api.urls)]
+
+
+def _host(*, include_billing=False):
+    host = MCPHost()
+    host.register(items_registry, api_base_path="/api/items", description="Items API.")
+    if include_billing:
+        host.register(billing_registry, api_base_path="/billing", description="Billing API.")
+    return host
 
 
 def _mcp_context(server, token="trusted-principal"):
-    request = RequestFactory().get(
-        "/mcp",
-        HTTP_X_MCP_TOKEN=token,
-    )
-    return Context(
-        request_context=SimpleNamespace(request=request),
-        mcp_server=server,
-    )
-
-
-class _HydratingAuth:
-    def __init__(self, token="trusted-token"):
-        self.token = token
-        self.requests = []
-
-    async def __call__(self, request):
-        self.requests.append(request)
-        if request.headers.get("Authorization") != f"Bearer {self.token}":
-            return None
-        request.user = "mcp-user"
-        request.token_log = ["authenticated"]
-        request.iced_key = "mcp-key"
-        return "mcp-principal"
-
-
-class _RaisingAuth:
-    async def __call__(self, request):
-        raise RuntimeError("auth service unavailable")
-
-
-lazy_auth = _HydratingAuth()
-lazy_non_callable = "not an auth callback"
-
-
-def _hydrated_registry(*, auth=None, async_endpoint=True):
-    registry = NinjaMCARouter(Router() if auth is None else Router(auth=auth))
-
-    def hydrated_response(request):
-        return {
-            "user": getattr(request, "user", None),
-            "auth": request.auth,
-            "token_log": getattr(request, "token_log", None),
-            "iced_key": getattr(request, "iced_key", None),
-        }
-
-    if async_endpoint:
-
-        @registry.register("/items", response=dict)
-        async def get_items(request):
-            return hydrated_response(request)
-
-    else:
-
-        @registry.register("/items", response=dict)
-        def get_items(request):
-            return hydrated_response(request)
-
-    return registry
+    request = RequestFactory().get("/mcp", HTTP_X_MCP_TOKEN=token)
+    return Context(request_context=SimpleNamespace(request=request), mcp_server=server)
 
 
 class AsyncMCPHostTests(IsolatedAsyncioTestCase):
-    async def test_single_tool_lists_registered_apis(self):
-        registry = NinjaMCARouter(Router())
-        host = MCPHost()
-        host.configure(
-            description_prefix="This tool accesses the public API.\nUse it for item operations."
+    async def asyncSetUp(self):
+        self.settings_override = override_settings(
+            ROOT_URLCONF=__name__,
+            ALLOWED_HOSTS=["localhost", "testserver"],
+            MIDDLEWARE=[],
         )
+        self.settings_override.enable()
+        middleware_events.clear()
+        operation_calls.clear()
 
-        default_registration = host.register(
-            registry,
-            api_base_path="/api/v2/items",
-            description="Public item API.",
-        )
-        custom_registration = host.register(
-            registry,
-            api_base_path="/billing",
-            description="Billing API.",
-        )
+    async def asyncTearDown(self):
+        self.settings_override.disable()
 
-        self.assertEqual(default_registration.api_base_path, "/api/v2/items")
-        self.assertEqual(custom_registration.api_base_path, "/billing")
-        tools = await host.build_server().list_tools()
+    async def test_single_tool_lists_registered_apis_and_late_registration(self):
+        host = _host()
+        host.configure(description_prefix="Use the public API.")
+        server = host.build_server()
+        tools = await server.list_tools()
         self.assertEqual([tool.name for tool in tools], ["mc_api"])
-        self.assertTrue(
-            tools[0].description.startswith(
-                "This tool accesses the public API.\nUse it for item operations.\n\n"
-            )
-        )
-        self.assertIn("/api/v2/items: Public item API.", tools[0].description)
+        self.assertIn("/api/items: Items API.", tools[0].description)
+        self.assertTrue(tools[0].description.startswith("Use the public API.\n\n"))
+
+        host.register(billing_registry, api_base_path="/billing", description="Billing API.")
+        tools = await server.list_tools()
         self.assertIn("/billing: Billing API.", tools[0].description)
-
-        late_registry = NinjaMCARouter(Router())
-
-        @late_registry.register("/items", response=dict)
-        def get_late_items(request):
-            return {"api": "late"}
-
-        host.register(
-            late_registry,
-            api_base_path="/api/v2/late",
-            description="Late API.",
+        self.assertEqual(
+            json.loads(await host._call_route("GET /billing/invoices", None)),
+            {"api": "billing"},
         )
 
-        tools = await host.build_server().list_tools()
-        self.assertIn("/api/v2/late: Late API.", tools[0].description)
-        result = await host._call_route("GET /api/v2/late/items", None)
-        self.assertEqual(json.loads(result), {"api": "late"})
-
-    async def test_configured_auth_hydrates_the_operation_request(self):
-        auth = _HydratingAuth()
-        registry = _hydrated_registry()
-        host = MCPHost()
-        host.configure(auth=auth)
-        host.register(
-            registry,
-            api_base_path="/api/items",
-            description="Items API.",
-        )
+    async def test_tool_call_uses_ninja_route_auth_and_forwards_credentials(self):
+        host = _host()
+        with self.assertRaises(ToolError) as denied:
+            await host._call_route("GET /api/items/items", None)
+        self.assertEqual(json.loads(str(denied.exception))["status"], 401)
 
         result = await host._call_route(
             "GET /api/items/items",
             None,
-            request_headers={"Authorization": "Bearer trusted-token"},
+            request_headers={"X-MCP-Token": "trusted-principal", "Cookie": "sessionid=abc"},
+            transport_scope={"client": ("192.0.2.8", 1234)},
         )
-
         self.assertEqual(
             json.loads(result),
-            {
-                "user": "mcp-user",
-                "auth": "mcp-principal",
-                "token_log": ["authenticated"],
-                "iced_key": "mcp-key",
-            },
-        )
-        self.assertEqual(len(auth.requests), 1)
-
-    async def test_configured_auth_applies_when_configured_after_registration(self):
-        auth = _HydratingAuth()
-        registry = _hydrated_registry()
-        host = MCPHost()
-        host.register(
-            registry,
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-        host.configure(auth=auth)
-
-        result = await host._call_route(
-            "GET /api/items/items",
-            None,
-            request_headers={"Authorization": "Bearer trusted-token"},
+            {"principal": "trusted-principal", "middleware": None, "cookie": "abc", "client": "192.0.2.8"},
         )
 
-        self.assertEqual(json.loads(result)["auth"], "mcp-principal")
-        self.assertEqual(len(auth.requests), 1)
-
-    async def test_configured_auth_applies_to_every_registered_router(self):
-        auth = _HydratingAuth()
-        first = _hydrated_registry()
-        second = _hydrated_registry()
-        host = MCPHost()
-        host.configure(auth=auth)
-        host.register(
-            first,
-            api_base_path="/api/first",
-            description="First API.",
-        )
-        host.register(
-            second,
-            api_base_path="/api/second",
-            description="Second API.",
+    async def test_middleware_runs_request_view_and_response_hooks(self):
+        with override_settings(MIDDLEWARE=[f"{__name__}.TrackingMiddleware"]):
+            host = _host()
+            result = await host._call_route(
+                "GET /api/items/items",
+                None,
+                request_headers={"X-MCP-Token": "trusted-principal"},
+            )
+        self.assertEqual(json.loads(result)["middleware"], "passed")
+        self.assertEqual(
+            middleware_events,
+            [("request", "/api/items/items"), ("view", "/api/items/items"), ("response", 200)],
         )
 
-        first_result = await host._call_route(
-            "GET /api/first/items",
-            None,
-            request_headers={"Authorization": "Bearer trusted-token"},
+    async def test_middleware_can_reject_before_the_operation(self):
+        with override_settings(MIDDLEWARE=[f"{__name__}.TrackingMiddleware"]):
+            host = _host()
+            with self.assertRaises(ToolError) as denied:
+                await host._call_route(
+                    "GET /api/items/items",
+                    None,
+                    request_headers={"X-Block": "1", "X-MCP-Token": "trusted-principal"},
+                )
+        self.assertEqual(json.loads(str(denied.exception))["code"], "blocked")
+        self.assertEqual(operation_calls, [])
+        self.assertEqual(middleware_events, [("request", "/api/items/items"), ("response", 403)])
+
+    async def test_middleware_process_view_can_reject(self):
+        with override_settings(MIDDLEWARE=[f"{__name__}.TrackingMiddleware"]):
+            host = _host()
+            with self.assertRaises(ToolError) as denied:
+                await host._call_route(
+                    "GET /api/items/items", None, request_headers={"X-View-Block": "1"},
+                )
+        self.assertEqual(json.loads(str(denied.exception))["code"], "view_blocked")
+        self.assertEqual(operation_calls, [])
+        self.assertEqual([event[0] for event in middleware_events], ["request", "view", "response"])
+
+    async def test_discovery_sync_async_query_and_body_use_mounted_urls(self):
+        host = _host()
+        discovery = json.loads(await host._call_route("GET /api/items/", None))
+        self.assertIn("get_async_item", discovery["available_operations"])
+        self.assertEqual(
+            json.loads(await host._call_route("GET /api/items/async-items/7", None)),
+            {"item_id": 7},
         )
-        second_result = await host._call_route(
-            "GET /api/second/items",
-            None,
-            request_headers={"Authorization": "Bearer trusted-token"},
+        self.assertEqual(
+            json.loads(await host._call_route("GET /api/items/query?tag=a&tag=b&empty=", None)),
+            {"tags": ["a", "b"], "empty": ""},
         )
-
-        self.assertEqual(json.loads(first_result)["auth"], "mcp-principal")
-        self.assertEqual(json.loads(second_result)["auth"], "mcp-principal")
-        self.assertEqual(len(auth.requests), 2)
-
-    async def test_configured_auth_failure_becomes_an_mcp_tool_error(self):
-        host = MCPHost()
-        host.configure(auth=_HydratingAuth())
-        host.register(
-            _hydrated_registry(),
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-
-        with self.assertRaises(ToolError):
-            await host._call_route("GET /api/items/items", None)
-
-    async def test_async_auth_exception_on_sync_handler_is_propagated(self):
-        host = MCPHost()
-        host.configure(auth=_RaisingAuth())
-        host.register(
-            _hydrated_registry(async_endpoint=False),
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "auth service unavailable"):
-            await host._call_route("GET /api/items/items", None)
-
-    async def test_configured_auth_path_resolves_lazily(self):
-        lazy_auth.requests.clear()
-        host = MCPHost()
-        host.configure(auth_path=f"{__name__}.lazy_auth")
-        host.register(
-            _hydrated_registry(),
-            api_base_path="/api/items",
-            description="Items API.",
+        self.assertEqual(
+            json.loads(await host._call_route("POST /api/items/echo?tag=one", {"name": "Éclair"})),
+            {"payload": {"name": "Éclair"}, "tag": "one"},
         )
 
-        self.assertIsNone(host._mcp_auth)
-        result = await host._call_route(
-            "GET /api/items/items",
-            None,
-            request_headers={"Authorization": "Bearer trusted-token"},
-        )
+    async def test_django_url_must_be_mounted_including_discovery_slash(self):
+        host = _host()
+        with self.assertRaises(ToolError) as missing_slash:
+            await host._call_route("GET /api/items", None)
+        self.assertEqual(json.loads(str(missing_slash.exception))["status"], 404)
 
-        self.assertEqual(json.loads(result)["auth"], "mcp-principal")
-        self.assertEqual(len(lazy_auth.requests), 1)
+        unmounted = NinjaMCARouter(Router())
 
-    async def test_configured_auth_path_rejects_non_callable_exports(self):
-        host = MCPHost()
-        host.configure(auth_path=f"{__name__}.lazy_non_callable")
-        host.register(
-            _hydrated_registry(),
-            api_base_path="/api/items",
-            description="Items API.",
-        )
+        @unmounted.register("/items", response=dict)
+        def get_unmounted(request):
+            return {"unexpected": True}
 
-        with self.assertRaisesRegex(TypeError, "callable"):
-            await host._call_route("GET /api/items/items", None)
+        host.register(unmounted, api_base_path="/unmounted", description="Unmounted API.")
+        with self.assertRaises(ToolError) as missing_mount:
+            await host._call_route("GET /unmounted/items", None)
+        self.assertEqual(json.loads(str(missing_mount.exception))["status"], 404)
 
-    async def test_mcp_auth_replaces_operation_auth_without_changing_normal_execution(self):
-        normal_calls = []
+    async def test_structured_error_and_non_json_responses(self):
+        host = _host()
+        with self.assertRaises(ToolError) as missing:
+            await host._call_route("GET /api/items/error", None)
+        self.assertEqual(json.loads(str(missing.exception))["code"], "item_missing")
 
-        def normal_auth(request):
-            normal_calls.append(request)
-            return "normal-principal"
-
-        mcp_auth = _HydratingAuth()
-        registry = _hydrated_registry(auth=normal_auth, async_endpoint=False)
-        host = MCPHost()
-        host.configure(auth=mcp_auth)
-        host.register(
-            registry,
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-
-        mcp_result = await host._call_route(
-            "GET /api/items/items",
-            None,
-            request_headers={"Authorization": "Bearer trusted-token"},
-        )
-        normal_response = await registry.execute_http_async(
-            "get_items",
-            RequestFactory().get("/items"),
-        )
-
-        self.assertEqual(json.loads(mcp_result)["auth"], "mcp-principal")
-        self.assertEqual(json.loads(normal_response.content)["auth"], "normal-principal")
-        self.assertEqual(len(mcp_auth.requests), 1)
-        self.assertEqual(len(normal_calls), 1)
-
-    async def test_configure_rejects_non_callable_auth(self):
-        with self.assertRaisesRegex(TypeError, "callable"):
-            MCPHost().configure(auth="not-a-callback")
-
-        with self.assertRaisesRegex(ValueError, "auth or auth_path"):
-            MCPHost().configure(
-                auth=_HydratingAuth(),
-                auth_path=f"{__name__}.lazy_auth",
+        with override_settings(MIDDLEWARE=[f"{__name__}.TrackingMiddleware"]):
+            host = _host()
+            with self.assertRaises(ToolError) as redirected:
+                await host._call_route(
+                    "GET /api/items/query", None, request_headers={"X-Redirect": "1"},
+                )
+            self.assertEqual(json.loads(str(redirected.exception))["status"], 302)
+            with self.assertRaises(ToolError) as plain:
+                await host._call_route("GET /api/items/query", None, request_headers={"X-Plain": "1"})
+            self.assertEqual(json.loads(str(plain.exception))["code"], "mcp_endpoint_error")
+            self.assertEqual(
+                await host._call_route("GET /api/items/query", None, request_headers={"X-Empty": "1"}),
+                "null",
             )
 
-        with self.assertRaisesRegex(ValueError, "dotted"):
-            MCPHost().configure(auth_path="lazy_auth")
-
-    async def test_manual_registration_rejects_duplicate_and_overlapping_api_paths(self):
-        registry = NinjaMCARouter(Router())
-        host = MCPHost()
-        host.register(
-            registry,
-            api_base_path="/api/v2/items",
-            description="Items API.",
-        )
-
-        with self.assertRaisesRegex(RuntimeError, "path"):
-            host.register(
-                registry,
-                api_base_path="/api/v2/items",
-                description="Other API.",
-            )
-        with self.assertRaisesRegex(RuntimeError, "overlaps"):
-            host.register(
-                registry,
-                api_base_path="/api/v2/items/private",
-                description="Nested API.",
-            )
-
-    async def test_single_tool_routes_multiple_registered_apis(self):
-        items = NinjaMCARouter(Router())
-        billing = NinjaMCARouter(Router())
-
-        @items.register("/items", response=dict)
-        def get_items(request):
-            return {"api": "items"}
-
-        @billing.register("/invoices", response=dict)
-        def get_invoices(request):
-            return {"api": "billing"}
-
-        host = MCPHost()
-        host.register(
-            items,
-            api_base_path="/api/v2/items",
-            description="Item API.",
-        )
-        host.register(
-            billing,
-            api_base_path="/billing",
-            description="Billing API.",
-        )
-
-        items_result = await host._call_route("GET /api/v2/items/items", None)
-        billing_result = await host._call_route("GET /billing/invoices", None)
-
-        self.assertEqual(json.loads(items_result), {"api": "items"})
-        self.assertEqual(json.loads(billing_result), {"api": "billing"})
+    async def test_only_registered_routes_are_callable(self):
+        host = _host()
         with self.assertRaisesRegex(MCAError, "No registered API"):
-            await host._call_route("GET /api/items-extra", None)
+            await host._call_route("GET /billing/invoices", None)
+        with self.assertRaisesRegex(MCAError, "No route matches"):
+            await host._call_route("GET /api/items/not-registered", None)
+        with self.assertRaisesRegex(MCAError, "cannot receive a JSON body"):
+            await host._call_route("GET /api/items/query", {"unexpected": True})
+        with self.assertRaisesRegex(MCAError, "No route matches"):
+            await host._call_route("GET /api/items/async-items/7%2Fextra", None)
 
-    async def test_custom_mcp_path_routes_only_one_transport_application(self):
+    async def test_tool_forwards_transport_headers_and_list_is_ungated(self):
+        with override_settings(MIDDLEWARE=[f"{__name__}.TrackingMiddleware"]):
+            host = _host()
+            server = host.build_server()
+            tools = await server.list_tools()
+            self.assertEqual([tool.name for tool in tools], ["mc_api"])
+            self.assertEqual(middleware_events, [])
+
+            result = await server.call_tool(
+                "mc_api", {"route": "GET /api/items/items"}, _mcp_context(server),
+            )
+        self.assertFalse(result.is_error)
+        self.assertEqual(json.loads(result.content[0].text)["principal"], "trusted-principal")
+        self.assertEqual([event[0] for event in middleware_events], ["request", "view", "response"])
+
+    async def test_custom_mcp_path_routes_only_transport_to_mcp(self):
         host = MCPHost()
         host.configure("/gateway/mcp/")
         calls = []
@@ -395,213 +304,21 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
 
         host._django_application = django_application
         host._mcp_application = mcp_application
-
         await host._dispatch(
             {"type": "http", "path": "/gateway/mcp/", "raw_path": b"/gateway/mcp/"},
-            None,
-            None,
+            None, None,
         )
         await host._dispatch(
             {"type": "http", "path": "/api/items", "raw_path": b"/api/items"},
-            None,
-            None,
+            None, None,
         )
-
         self.assertEqual(calls[0][0], "mcp")
         self.assertEqual(calls[0][1]["path"], "/")
         self.assertEqual(calls[1][0], "django")
         with self.assertRaisesRegex(RuntimeError, "before initialization"):
             host.configure("/other/mcp")
-        with self.assertRaisesRegex(ValueError, "description prefix"):
-            MCPHost().configure(description_prefix=None)
 
-    async def test_mcp_can_execute_async_discovery_and_operations(self):
-        registry = NinjaMCARouter(Router())
-
-        @registry.register("/items/{item_id}", response=dict)
-        async def get_item(request, item_id: int):
-            return {"item_id": item_id}
-
-        @registry.register("/sync-items", response=dict)
-        def get_sync_items(request):
-            return {"kind": "sync"}
-
-        host = MCPHost()
-        host.register(
-            registry,
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-
-        discovery = await host._call_route(
-            "GET /api/items",
-            None,
-        )
-        self.assertIn("get_item", json.loads(discovery)["available_operations"])
-
-        result = await host._call_route(
-            "GET /api/items/items/7",
-            None,
-        )
-        self.assertEqual(json.loads(result), {"item_id": 7})
-
-        sync_result = await host._call_route(
-            "GET /api/items/sync-items",
-            None,
-        )
-        self.assertEqual(json.loads(sync_result), {"kind": "sync"})
-
-    async def test_mcp_composes_async_remote_schemas_and_guides(self):
-        class AsyncClient:
-            def __init__(self):
-                self.calls = []
-
-            async def adiscover(self, *, guide=None, operation=None):
-                self.calls.append((guide, operation))
-                return {
-                    "operations": {
-                        "get_invoice": {
-                            "route": "GET private/invoices/{invoice_id}",
-                            "description": "Read an invoice.",
-                            "guides": ["invoices.md"],
-                            "request_schema": None,
-                            "response_schema": {"type": "object"},
-                        }
-                    }
-                }
-
-        registry = NinjaMCARouter(Router())
-        client = AsyncClient()
-        registry.mount("billing", client)
-
-        @registry.register(
-            "/invoices/{invoice_id}",
-            response=dict,
-            delegate_to="billing.get_invoice",
-        )
-        def get_invoice(request, invoice_id: int):
-            return {"invoice_id": invoice_id}
-
-        host = MCPHost()
-        host.register(
-            registry,
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-        root = json.loads(
-            await host._call_route(
-                "GET /api/items",
-                None,
-            )
-        )
-        self.assertIn("billing/invoices.md", root["available_guides"])
-
-        details = json.loads(
-            await host._call_route(
-                "GET /api/items?operation=get_invoice",
-                None,
-            )
-        )
-        self.assertEqual(
-            details["operations"]["get_invoice"]["response_schema"],
-            {"type": "object"},
-        )
-        self.assertEqual(client.calls, [(None, "get_invoice")])
-
-    async def test_mcp_request_context_supplies_application_authentication(self):
-        registry = _authenticated_registry()
-
-        unauthenticated_host = MCPHost()
-        unauthenticated_host.register(
-            registry,
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-        with self.assertRaises(ToolError):
-            await unauthenticated_host._call_route(
-                "GET /api/items/items",
-                None,
-            )
-
-        received_headers = {}
-
-        def authenticated_context(
-            method,
-            path,
-            path_params,
-            query_params,
-            body,
-            request_headers,
-        ):
-            received_headers.update(request_headers)
-            return RequestFactory().generic(
-                method,
-                path,
-                headers={
-                    "X-MCP-Token": request_headers["X-MCP-Token"],
-                },
-            )
-
-        host = MCPHost(request_context_factory=authenticated_context)
-        host.register(
-            registry,
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-        result = await host._call_route(
-            "GET /api/items/items",
-            None,
-            request_headers={"X-MCP-Token": "trusted-principal"},
-        )
-        self.assertEqual(json.loads(result), {"principal": "trusted-principal"})
-        self.assertEqual(received_headers, {"X-MCP-Token": "trusted-principal"})
-
-    async def test_mcp_tool_passes_transport_headers_to_request_context_factory(self):
-        registry = _authenticated_registry()
-
-        def authenticated_context(
-            method,
-            path,
-            path_params,
-            query_params,
-            body,
-            request_headers,
-        ):
-            return RequestFactory().generic(method, path, headers=dict(request_headers))
-
-        host = MCPHost(request_context_factory=authenticated_context)
-        host.register(
-            registry,
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-        server = host.build_server()
-
-        result = await server.call_tool(
-            "mc_api",
-            {"route": "GET /api/items/items"},
-            _mcp_context(server),
-        )
-
-        self.assertFalse(result.is_error)
-        self.assertEqual(result.content[0].text, '{"principal": "trusted-principal"}')
-
-    async def test_mcp_tool_forwards_transport_headers_by_default(self):
-        registry = _authenticated_registry()
-
-        host = MCPHost()
-        host.register(
-            registry,
-            api_base_path="/api/items",
-            description="Items API.",
-        )
-        server = host.build_server()
-
-        result = await server.call_tool(
-            "mc_api",
-            {"route": "GET /api/items/items"},
-            _mcp_context(server),
-        )
-
-        self.assertFalse(result.is_error)
-        self.assertEqual(result.content[0].text, '{"principal": "trusted-principal"}')
+    async def test_registration_rejects_overlapping_paths(self):
+        host = _host()
+        with self.assertRaisesRegex(RuntimeError, "overlaps"):
+            host.register(items_registry, api_base_path="/api/items/private", description="Duplicate")
