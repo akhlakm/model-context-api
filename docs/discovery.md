@@ -147,6 +147,6 @@ well-behaved client can follow this sequence:
    ~~~
 
 The same sequence can use the shared `mc_api` tool instead: call it with
-`GET /api/items`, then request the guide and schema, then call it with
+`GET /api/items/`, then request the guide and schema, then call it with
 `POST /api/items/items` and the JSON body. The business operation is still the
 same registered operation.

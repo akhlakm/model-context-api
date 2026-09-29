@@ -101,10 +101,10 @@ mcp_host.register(
 )
 ~~~
 
-The single `mc_api` tool routes a request to the registered API whose base path
-matches the request. The base path is also used to strip the prefix before
-dispatching to the selected router. A route under `/api/v2/app2` is never
-dispatched to the `/api/v1/app1` registry.
+The single `mc_api` tool accepts only routes belonging to a registered API.
+It then sends the full route through Django's ASGI application, so the route
+must also exist at that path in Django's URL configuration. A route under
+`/api/v2/app2` is never accepted by the `/api/v1/app1` registration.
 
 The MCP host does not infer these paths from a root NinjaAPI. Register the
 complete mount path explicitly so composition remains correct when separate
@@ -145,12 +145,13 @@ mc_api(route, body=None)
 ~~~
 
 The tool description lists every registered API base path and its description.
-Start discovery at the relevant API base path:
+Start discovery at the router's actual Django URL. For a Ninja router mounted
+at `/api/items`, its default discovery URL is typically `/api/items/`:
 
 ~~~text
-mc_api(route="GET /api/items")
-mc_api(route="GET /api/items?guide=items.md")
-mc_api(route="GET /api/items?operation=get_item")
+mc_api(route="GET /api/items/")
+mc_api(route="GET /api/items/?guide=items.md")
+mc_api(route="GET /api/items/?operation=get_item")
 ~~~
 
 Then invoke operations with their full API paths:
@@ -174,61 +175,21 @@ Incorrect: GET /mcp/api/items/items/7
 ~~~
 
 The route parser accepts a method and full API path with or without a leading
-slash, parses query strings, preserves repeated query parameters, accepts JSON
-bodies only for POST, PUT, and PATCH, and resolves the path after the
-registered API prefix against the selected router.
+slash, preserves query strings and repeated query parameters, and accepts JSON
+bodies only for POST, PUT, and PATCH. The URL must match the mounted Django
+route, including any required trailing slash.
 
 ## Authentication and errors
 
 MCP execution supports both synchronous and asynchronous Ninja operations,
 including asynchronous `get_context` discovery and mounted-router composition.
-`MCPHost` copies incoming MCP transport headers into a synthetic Django
-request, so header-based authentication works without application-specific ASGI
-code. An MCP client can therefore send the same token or API key header that a
-normal HTTP client would send.
-
-For a shared authentication policy across all MCP-exposed APIs, configure an
-async or synchronous Ninja-compatible callback on the host:
-
-~~~python
-from mca.mcp import mcp_host
-from myapp.auth import MCPJWTAuthAsync
-
-mcp_host.configure(
-    mount_path="/api/v2/mcp",
-    auth=MCPJWTAuthAsync(),
-    description_prefix="This tool accesses the v2 formulation APIs.",
-)
-~~~
-
-If importing the callback module requires Django's app registry, defer the
-import until after Django initializes by using its dotted path:
-
-~~~python
-from mca.mcp import mcp_host
-
-mcp_host.configure(
-    mount_path="/api/v2/mcp",
-    auth_path="core.auth.jwt_auth",
-)
-~~~
-
-The path must identify an already-constructed callable export. The MCP host
-resolves it after Django initialization. Applications that import the callback
-directly must initialize Django before the import, for example with
-`django.setup()` in an ASGI entry point.
-
-The callback runs as Ninja operation authentication on the final request passed
-to each handler, including discovery. It can populate `request.user`,
-`request.auth`, or application-specific fields such as `request.token_log` and
-`request.iced_key`. The MCP callback replaces operation-level auth only for
-MCP execution; normal Django and Ninja routes keep their configured
-authentication. With a host callback, the shared router can remain a plain
-`Router(tags=[...])` without repeating `auth=` on every operation.
-
-Applications that need custom users, sessions, or credential translation can
-provide a `request_context_factory`; its final argument is a mapping of headers
-from the incoming MCP transport request.
+Each tool call passes through Django URL routing and middleware before Ninja
+runs the operation. Incoming MCP credentials and cookies are forwarded to the
+API request; Django middleware and Ninja route auth enforce the same policy as
+direct HTTP. Public HTTP routes, including discovery when configured as public,
+remain public through MCP. The `/mcp` protocol endpoint and `tools/list` remain
+outside Django middleware. Clients should send credentials on every tool call;
+cookies set by an API response are not relayed back through the MCP result.
 
 Successful results are returned as JSON text. A 204 response is represented as
 `null`. Invalid routes, validation failures, unknown operations, and endpoint
@@ -237,10 +198,10 @@ field, and HTTP status.
 
 ## Connect MCP clients with an API token
 
-Once the server has configured an `auth` or `auth_path` callback to validate
-the bearer token, clients can attach the token to their Streamable HTTP MCP
-connection. The client configuration supplies the HTTP header; it does not
-define the application's authentication policy.
+Once the Django middleware or Ninja route is configured to validate a bearer
+token, clients can attach the token to their Streamable HTTP MCP connection.
+The client configuration supplies the HTTP header; it does not define the
+application's authentication policy.
 
 ### Connect from Codex CLI with an API token
 
@@ -311,7 +272,7 @@ After the server connects, invoke the shared tool normally, using the full REST
 API route rather than the MCP mount path:
 
 ~~~text
-mc_api(route="GET /api/items")
+mc_api(route="GET /api/items/")
 mc_api(route="GET /api/items/items/7")
 ~~~
 

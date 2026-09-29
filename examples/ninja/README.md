@@ -47,7 +47,7 @@ MCP tool name:           mc_api
 REST API base path:      /api
 ```
 
-The MCP tool uses full API paths, for example `mc_api(route="GET /api")` for
+The MCP tool uses full API paths, for example `mc_api(route="GET /api/")` for
 discovery or `mc_api(route="GET /api/invoices/7")` for an operation. Configure
 the MCP client's HTTP transport with `X-Demo-Token: demo-token` for
 authenticated invoice operations. Discovery works without credentials.
@@ -92,8 +92,9 @@ curl -X DELETE \
   http://127.0.0.1:8000/api/invoices/7
 ```
 
-The public handler performs authentication, checks the invoice ACL, records an
-access log entry, and then calls `billing_rpc`. The RPC client invokes the
+The demo authentication middleware validates `X-Demo-Token` and attaches the
+principal to the request before the public handler checks the invoice ACL,
+records an access log entry, and calls `billing_rpc`. The RPC client invokes the
 private Pydantic router and serializes its response as JSON. The private
 operation names are `get_invoice`, `make_invoice`, `update_invoice`, and
 `remove_invoice`; they are never registered as public HTTP routes. The limited
