@@ -8,7 +8,7 @@ ROOT_URLCONF = "demo.urls"
 ASGI_APPLICATION = "demo.asgi.application"
 
 INSTALLED_APPS: list[str] = ["demo.apps.DemoConfig"]
-MIDDLEWARE: list[str] = []
+MIDDLEWARE: list[str] = ["demo.middleware.DemoAuthenticationMiddleware"]
 
 DATABASES = {
     "default": {

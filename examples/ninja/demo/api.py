@@ -33,23 +33,6 @@ mcp_host.register(
 )
 
 
-def demo_auth(request: HttpRequest) -> dict[str, Any] | None:
-    """Authenticate the demo caller from a request header."""
-    principals = {
-        "demo-token": {
-            "subject": "demo-user",
-            "scopes": {"billing:read", "billing:write", "billing:delete"},
-            "invoice_ids": {7},
-        },
-        "limited-token": {
-            "subject": "limited-user",
-            "scopes": {"billing:read"},
-            "invoice_ids": set(),
-        },
-    }
-    return principals.get(request.headers.get("X-Demo-Token"))
-
-
 def require_access(
     request: HttpRequest,
     scope: str,
@@ -66,7 +49,6 @@ def require_access(
     "/invoices/{invoice_id}",
     operation_id="get_public_invoice",
     response=dict[str, Any],
-    auth=demo_auth,
     guides=["api.md"],
     delegate_to="billing.get_invoice",
 )
@@ -93,7 +75,6 @@ def get_public_invoice(
     "/invoices",
     operation_id="make_public_invoice",
     response=dict[str, Any],
-    auth=demo_auth,
     guides=["api.md"],
     delegate_to="billing.make_invoice",
 )
@@ -111,7 +92,6 @@ def make_public_invoice(
     "/invoices/{invoice_id}",
     operation_id="update_public_invoice",
     response=dict[str, Any],
-    auth=demo_auth,
     guides=["api.md"],
     delegate_to="billing.update_invoice",
 )
@@ -139,7 +119,6 @@ def update_public_invoice(
     "/invoices/{invoice_id}",
     operation_id="remove_public_invoice",
     response=dict[str, Any],
-    auth=demo_auth,
     guides=["api.md"],
     delegate_to="billing.remove_invoice",
 )

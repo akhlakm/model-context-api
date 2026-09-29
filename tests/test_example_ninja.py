@@ -1,6 +1,7 @@
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 
 from django.conf import settings
@@ -12,7 +13,7 @@ if not settings.configured:
         SECRET_KEY="mca-example-test-key",
         ROOT_URLCONF="demo.urls",
         ALLOWED_HOSTS=["*"],
-        MIDDLEWARE=[],
+        MIDDLEWARE=["demo.middleware.DemoAuthenticationMiddleware"],
     )
 
 import django
@@ -28,6 +29,8 @@ if str(EXAMPLE_ROOT) not in sys.path:
 from demo.api import public_mca
 from demo.asgi import application as demo_application
 from demo.rpc import billing_rpc
+from mcp.server.mcpserver.context import Context
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mca.mcp import mcp_host
 
@@ -205,35 +208,40 @@ class NinjaCompositionExampleTests(TestCase):
         )
 
     def test_public_handler_authenticates_checks_acl_and_uses_rpc_client(self):
-        request = RequestFactory().get(
+        response = Client().get(
             "/api/invoices/7",
             HTTP_X_DEMO_TOKEN="demo-token",
         )
-        response = public_mca.execute_http(
-            "get_public_invoice",
-            request,
-            path_params={"invoice_id": 7},
-        )
 
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(json.loads(response.content)["invoice_id"], 7)
+        self.assertEqual(response.json()["invoice_id"], 7)
+        self.assertEqual(response["X-Demo-Middleware"], "authenticated")
         self.assertEqual(
             billing_rpc.calls[-1],
             {"method": "get_invoice", "params": {"invoice_id": 7}, "data": None},
         )
 
     def test_acl_failure_prevents_private_rpc_call(self):
-        request = RequestFactory().get(
+        response = Client().get(
             "/api/invoices/7",
             HTTP_X_DEMO_TOKEN="limited-token",
         )
-        response = public_mca.execute_http(
-            "get_public_invoice",
-            request,
-            path_params={"invoice_id": 7},
-        )
 
         self.assertEqual(response.status_code, 403)
+        self.assertEqual(billing_rpc.calls, [])
+
+    def test_missing_demo_token_is_rejected_by_middleware(self):
+        response = Client().get("/api/invoices/7")
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(
+            response.json(),
+            {
+                "code": "authentication_required",
+                "detail": "A valid X-Demo-Token header is required.",
+                "field": "X-Demo-Token",
+            },
+        )
         self.assertEqual(billing_rpc.calls, [])
 
     def test_public_django_url_reaches_only_the_public_router(self):
@@ -351,3 +359,45 @@ class NinjaCompositionExampleAsyncTests(IsolatedAsyncioTestCase):
                 },
             ],
         )
+
+
+class NinjaCompositionMCPTests(IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        billing_rpc.calls.clear()
+        public_mca.clear_remote_schema_cache()
+
+    async def test_mcp_discovery_is_public_but_operations_use_demo_middleware_auth(self):
+        server = mcp_host.build_server()
+        tools = await server.list_tools()
+        self.assertEqual([tool.name for tool in tools], ["mc_api"])
+
+        discovery = json.loads(await mcp_host._call_route("GET /api/", None))
+        self.assertIn("get_public_invoice", discovery["available_operations"])
+        billing_rpc.calls.clear()
+
+        with self.assertRaises(ToolError) as denied:
+            await mcp_host._call_route("GET /api/invoices/7", None)
+        self.assertEqual(json.loads(str(denied.exception))["status"], 401)
+        self.assertEqual(billing_rpc.calls, [])
+
+    async def test_mcp_operation_forwards_token_through_demo_middleware(self):
+        server = mcp_host.build_server()
+        context = Context(
+            request_context=SimpleNamespace(
+                request=RequestFactory().get(
+                    "/mcp",
+                    HTTP_X_DEMO_TOKEN="demo-token",
+                )
+            ),
+            mcp_server=server,
+        )
+
+        result = await server.call_tool(
+            "mc_api",
+            {"route": "GET /api/invoices/7"},
+            context,
+        )
+
+        self.assertFalse(result.is_error)
+        self.assertEqual(json.loads(result.content[0].text)["invoice_id"], 7)
+        self.assertEqual(billing_rpc.calls[-1]["method"], "get_invoice")

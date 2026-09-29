@@ -140,8 +140,9 @@ This means a client can use the same API in two ways:
 ## Internal Ninja dispatch
 
 A registered operation can be executed without issuing an HTTP request or
-re-entering ASGI. This is useful for internal orchestration and is also how
-the MCP adapter invokes registered endpoints:
+re-entering ASGI. This is useful for trusted internal orchestration. The MCP
+host uses Django's ASGI application instead, so MCP API calls pass through URL
+routing and configured middleware before reaching the Ninja operation:
 
 ~~~python
 response = mca_registry.execute_http_request(
