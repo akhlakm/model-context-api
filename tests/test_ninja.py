@@ -23,6 +23,7 @@ from unittest import IsolatedAsyncioTestCase, TestCase
 from ninja import NinjaAPI, Router
 
 from mca.base import MCAError
+from mca.models import ErrorOut
 from mca.ninja import NinjaMCARouter
 
 
@@ -298,6 +299,47 @@ class NinjaMCARouterPackageTests(TestCase):
             RequestFactory().post("/design", data="{}", content_type="application/json"),
         )
         self.assertEqual(json.loads(response.content), {"source": "mca"})
+
+    def test_discovery_openapi_omits_implicit_error_responses(self):
+        api = NinjaAPI()
+        registry = NinjaMCARouter(api, operation_id_namespace="public")
+
+        schema = api.get_openapi_schema(path_prefix="")
+        operation = registry._find_openapi_operation(
+            schema,
+            registry._ninja_operation_id("get_context"),
+        )
+
+        self.assertIsNotNone(operation)
+        responses = operation["responses"]
+        self.assertIn(200, responses)
+        self.assertTrue(
+            {400, 404, 422, 500, 502}.isdisjoint(responses),
+        )
+        self.assertNotIn("ErrorOut", schema.get("components", {}).get("schemas", {}))
+
+    def test_discovery_openapi_preserves_explicit_error_responses(self):
+        api = NinjaAPI()
+        registry = NinjaMCARouter(
+            api,
+            error_responses={404: ErrorOut},
+            operation_id_namespace="public",
+        )
+
+        schema = api.get_openapi_schema(path_prefix="")
+        operation = registry._find_openapi_operation(
+            schema,
+            registry._ninja_operation_id("get_context"),
+        )
+
+        self.assertIsNotNone(operation)
+        self.assertIn(200, operation["responses"])
+        self.assertIn(404, operation["responses"])
+        self.assertNotIn(400, operation["responses"])
+        self.assertNotIn(422, operation["responses"])
+        self.assertNotIn(500, operation["responses"])
+        self.assertNotIn(502, operation["responses"])
+        self.assertIn("ErrorOut", schema["components"]["schemas"])
 
     def test_multiple_mca_routers_have_unique_transport_ids(self):
         first = NinjaMCARouter(Router())

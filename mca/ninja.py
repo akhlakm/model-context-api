@@ -76,8 +76,8 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
     ):
         """Create a router bound to a Ninja ``API`` or ``Router`` instance.
 
-        ``error_responses`` extends or overrides the default discovery errors
-        in the generated Ninja/OpenAPI registration. ``operation_id_namespace``
+        ``error_responses`` adds explicitly documented discovery errors to the
+        generated Ninja/OpenAPI registration. ``operation_id_namespace``
         identifies this registry's private Ninja/OpenAPI operation IDs; when
         omitted, a unique process-local namespace is assigned.
         """
@@ -103,12 +103,8 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         )
 
     def _discovery_endpoints(self) -> Iterable[tuple[str, str, F, Mapping[str, Any]]]:
-        """Define the Ninja discovery endpoint and its standard error responses."""
+        """Define the Ninja discovery endpoint and its declared responses."""
         response = {
-            400: ErrorOut,
-            404: ErrorOut,
-            500: ErrorOut,
-            502: ErrorOut,
             **self.error_responses,
             200: MCAResponseOut | MCADiscoveryOut,
         }
