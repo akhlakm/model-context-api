@@ -165,14 +165,19 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         return f"mca__{self._operation_id_namespace}__{operation}"
 
     @staticmethod
-    def _response_models(response: Any) -> dict[int, Any]:
-        """Add structured MCA error responses to a Ninja response declaration."""
+    def _response_models(response: Any) -> dict[Any, Any]:
+        """Normalize response declarations while keeping MCA errors routable.
+
+        MCA still converts ``MCAError`` exceptions into structured HTTP
+        responses at runtime.  The ``Ellipsis`` fallback is consumed by
+        Django Ninja at runtime and omitted from generated OpenAPI, so
+        undeclared application errors do not clutter the endpoint schema.
+        """
         if isinstance(response, Mapping):
             responses = dict(response)
         else:
             responses = {200: Any if response is None else response}
-        for status in (400, 404, 422, 500, 502):
-            responses.setdefault(status, ErrorOut)
+        responses.setdefault(Ellipsis, ErrorOut)
         return responses
 
     @staticmethod

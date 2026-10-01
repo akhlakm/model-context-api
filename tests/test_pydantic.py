@@ -284,13 +284,7 @@ class PydanticMCARouterPackageTests(TestCase):
                                 "route": "POST private/invoices",
                                 "description": "Create an invoice.",
                                 "request_schema": {
-                                    "type": "object",
-                                    "properties": {
-                                        "body": {
-                                            "$ref": "#/components/schemas/PrivateInvoiceCreate",
-                                        },
-                                    },
-                                    "required": ["body"],
+                                    "$ref": "#/components/schemas/PrivateInvoiceCreate",
                                     "components": {
                                         "schemas": {
                                             "PrivateInvoiceCreate": {
@@ -347,14 +341,14 @@ class PydanticMCARouterPackageTests(TestCase):
         schema = details.operations["make_invoice"].model_dump()
 
         self.assertEqual(
-            schema["request_schema"]["properties"]["body"]["type"],
+            schema["request_schema"]["type"],
             "object",
         )
         self.assertEqual(
             schema["response_schema"]["type"],
             "object",
         )
-        self.assertIn("customer", schema["request_schema"]["properties"]["body"]["properties"])
+        self.assertIn("customer", schema["request_schema"]["properties"])
         self.assertIn("invoice_id", schema["response_schema"]["properties"])
         self.assertNotIn("components", schema["request_schema"])
         self.assertNotIn("components", schema["response_schema"])
@@ -366,7 +360,7 @@ class PydanticMCARouterPackageTests(TestCase):
         )
         typed_schema = typed_details.operations["make_typed_invoice"].model_dump()
         self.assertEqual(
-            typed_schema["request_schema"]["properties"]["body"]["type"],
+            typed_schema["request_schema"]["type"],
             "object",
         )
         self.assertEqual(

@@ -59,7 +59,12 @@ def build_request_schema(
     body_required: bool = False,
     components: Mapping[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Build the common MCA request envelope from adapter-specific sections."""
+    """Build an MCA request schema from adapter-specific sections.
+
+    A body-only operation is represented by the body schema itself.  Operations
+    that also expose path or query parameters retain the named sections so the
+    caller can distinguish transport parameters from JSON body data.
+    """
     properties: dict[str, Any] = {}
     required: list[str] = []
     for name, section in sections.items():
@@ -81,6 +86,12 @@ def build_request_schema(
             "description",
             _schema_description(body_property, components) or "JSON request body.",
         )
+
+        if not properties:
+            if components:
+                body_property["components"] = {"schemas": deepcopy(dict(components))}
+            return body_property
+
         properties["body"] = body_property
         if body_required:
             required.append("body")

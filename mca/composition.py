@@ -508,24 +508,27 @@ class MCACompositionMixin:
         remote_request: Mapping[str, Any],
         public_operation: str,
     ) -> None:
-        """Replace a generic public body schema with the delegated body contract."""
-        remote_properties = remote_request.get("properties", {})
-        remote_body = (
-            remote_properties.get("body")
-            if isinstance(remote_properties, Mapping)
-            else None
-        )
+        """Replace a generic public body schema with the delegated contract."""
         request_schema = composed.get("request_schema")
-        if remote_body is None or not isinstance(request_schema, dict):
+        if not isinstance(request_schema, dict):
             return
 
-        request_properties = request_schema.setdefault("properties", {})
-        local_body = request_properties.get("body")
-        if local_body is None or not self._is_generic_schema(local_body):
+        request_properties = request_schema.get("properties", {})
+        local_has_transport = isinstance(request_properties, Mapping) and (
+            "path_params" in request_properties or "query_params" in request_properties
+        )
+        local_body = request_properties.get("body") if local_has_transport else request_schema
+        remote_properties = remote_request.get("properties", {})
+        remote_body = remote_properties.get("body") if local_has_transport else remote_request
+        if remote_body is None:
             return
 
+        if not self._is_generic_schema(local_body):
+            return
+
+        target_schema = request_schema if local_has_transport else {}
         body_schema = self._merge_remote_fragment(
-            request_schema,
+            target_schema,
             remote_request,
             remote_body,
             public_operation,
@@ -536,14 +539,18 @@ class MCACompositionMixin:
             and "description" not in body_schema
         ):
             body_schema["description"] = local_body["description"]
-        request_properties["body"] = body_schema
-
-        required = request_schema.setdefault("required", [])
-        if "body" in remote_request.get("required", []):
-            if "body" not in required:
-                required.append("body")
+        if local_has_transport:
+            request_properties["body"] = body_schema
+            required = request_schema.setdefault("required", [])
+            if "body" in remote_request.get("required", []):
+                if "body" not in required:
+                    required.append("body")
+            else:
+                request_schema["required"] = [name for name in required if name != "body"]
         else:
-            request_schema["required"] = [name for name in required if name != "body"]
+            if target_schema.get("components"):
+                body_schema["components"] = target_schema["components"]
+            composed["request_schema"] = body_schema
 
     def _compose_remote_response(
         self,

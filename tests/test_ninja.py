@@ -433,11 +433,18 @@ class NinjaMCARouterPackageTests(TestCase):
                                 "request_schema": {
                                     "type": "object",
                                     "properties": {
+                                        "path_params": {
+                                            "type": "object",
+                                            "properties": {
+                                                "invoice_id": {"type": "integer"},
+                                            },
+                                            "required": ["invoice_id"],
+                                        },
                                         "body": {
                                             "$ref": "#/components/schemas/PrivateFilter",
                                         },
                                     },
-                                    "required": ["body"],
+                                    "required": ["path_params", "body"],
                                     "components": {
                                         "schemas": {
                                             "PrivateFilter": {
