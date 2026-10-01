@@ -16,6 +16,14 @@ MCA adds the shared discovery operation, guide access, operation descriptions,
 and a schema view assembled from Django Ninja's OpenAPI metadata. Router-backed
 registries bind lazily to an internal NinjaAPI for this metadata and execution.
 
+MCA operation names are separate from Django Ninja/OpenAPI `operationId` values.
+MCA keeps names such as `get_item` and `get_context` for discovery and internal
+dispatch, while assigning each registry a namespace for its transport IDs so
+multiple registries can share one root OpenAPI document safely. Pass
+`operation_id_namespace="items"` to `NinjaMCARouter` when stable, human-readable
+transport IDs are useful for generated clients; explicit namespaces should be
+unique within the root OpenAPI document.
+
 ## Register a Ninja API
 
 ~~~python

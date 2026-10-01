@@ -1,4 +1,6 @@
 import json
+from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -51,26 +53,40 @@ class FakeAPI:
 
         return decorator
 
+    def _operation_id(self, method, path):
+        for registered_method, registered_path, options, _ in self.calls:
+            if (
+                registered_method == method
+                and registered_path == path
+                and options.get("include_in_schema") is not False
+            ):
+                return options["operation_id"]
+        return {
+            ("GET", "/guided"): "get_guided",
+            ("GET", "/documented"): "get_documented",
+            ("GET", "/invoices/{invoice_id}"): "get_invoice",
+        }[(method, path)]
+
     def get_openapi_schema(self):
         self.openapi_calls += 1
         return {
             "paths": {
                 "/guided": {
                     "get": {
-                        "operationId": "get_guided",
+                        "operationId": self._operation_id("GET", "/guided"),
                         "description": "Read guided data.",
                         "responses": {"200": {"description": "OK"}},
                     },
                 },
                 "/documented": {
                     "get": {
-                        "operationId": "get_documented",
+                        "operationId": self._operation_id("GET", "/documented"),
                         "responses": {"200": {"description": "OK"}},
                     },
                 },
                 "/invoices/{invoice_id}": {
                     "get": {
-                        "operationId": "get_invoice",
+                        "operationId": self._operation_id("GET", "/invoices/{invoice_id}"),
                         "description": "Read a public invoice.",
                         "parameters": [
                             {
@@ -157,7 +173,11 @@ class NinjaMCARouterPackageTests(TestCase):
 
     def test_register_all_generates_selected_operation_ids(self):
         api = FakeAPI()
-        router = NinjaMCARouter(api, guides_dir=Path(__file__).resolve().parents[1])
+        router = NinjaMCARouter(
+            api,
+            guides_dir=Path(__file__).resolve().parents[1],
+            operation_id_namespace="engine_api",
+        )
 
         @router.register_all(
             "/engine",
@@ -174,7 +194,10 @@ class NinjaMCARouterPackageTests(TestCase):
                 for call in api.calls
                 if call[2].get("include_in_schema") is not False
                 ][1:],
-            [("GET", "get_engine"), ("POST", "make_engine")],
+            [
+                ("GET", router._ninja_operation_id("get_engine")),
+                ("POST", router._ninja_operation_id("make_engine")),
+            ],
         )
         self.assertEqual(
             [call[1] for call in api.calls if call[2].get("include_in_schema") is False],
@@ -218,8 +241,86 @@ class NinjaMCARouterPackageTests(TestCase):
         self.assertNotIn("available_guides", discovery)
         self.assertEqual(documented["description"], "Read documented data.")
         self.assertNotIn("guides", guided)
-        documented_call = next(call for call in api.calls if call[2].get("operation_id") == "get_documented")
+        documented_call = next(
+            call
+            for call in api.calls
+            if call[2].get("operation_id") == router._ninja_operation_id("get_documented")
+        )
         self.assertEqual(documented_call[2]["description"], "Read documented data.")
+
+    def test_operation_id_namespace_is_validated(self):
+        router = NinjaMCARouter(FakeAPI(), operation_id_namespace="public_api")
+
+        @router.register("/items")
+        def get_items():
+            return []
+
+        self.assertEqual(
+            router._ninja_operation_id("get_items"),
+            "mca__public_api__get_items",
+        )
+        with self.assertRaisesRegex(ValueError, "operation_id_namespace"):
+            NinjaMCARouter(FakeAPI(), operation_id_namespace="public api")
+
+    def test_transport_ids_do_not_collide_with_existing_ninja_ids(self):
+        api = NinjaAPI()
+
+        @api.post("/foundation/design", operation_id="make_design")
+        def foundation_make_design(request):
+            return {"source": "foundation"}
+
+        @api.get("/foundation/context", operation_id="get_context")
+        def foundation_get_context(request):
+            return {"source": "foundation"}
+
+        registry = NinjaMCARouter(api, operation_id_namespace="public")
+
+        @registry.register("/design", operation_id="make_design", response=dict)
+        def make_design(request):
+            return {"source": "mca"}
+
+        output = StringIO()
+        with redirect_stdout(output):
+            schema = api.get_openapi_schema(path_prefix="")
+
+        operation_ids = [
+            operation["operationId"]
+            for path_data in schema["paths"].values()
+            for operation in path_data.values()
+        ]
+        self.assertEqual(len(operation_ids), len(set(operation_ids)))
+        self.assertNotIn("already used", output.getvalue())
+        self.assertIn("mca__public__get_context", operation_ids)
+        self.assertIn("mca__public__make_design", operation_ids)
+
+        response = registry.execute_http(
+            "make_design",
+            RequestFactory().post("/design", data="{}", content_type="application/json"),
+        )
+        self.assertEqual(json.loads(response.content), {"source": "mca"})
+
+    def test_multiple_mca_routers_have_unique_transport_ids(self):
+        first = NinjaMCARouter(Router())
+        second = NinjaMCARouter(Router())
+        root_api = NinjaAPI()
+        root_api.add_router("/first", first.api)
+        root_api.add_router("/second", second.api)
+
+        output = StringIO()
+        with redirect_stdout(output):
+            schema = root_api.get_openapi_schema(path_prefix="")
+
+        operation_ids = [
+            operation["operationId"]
+            for path_data in schema["paths"].values()
+            for operation in path_data.values()
+        ]
+        self.assertEqual(len(operation_ids), len(set(operation_ids)))
+        self.assertNotIn("already used", output.getvalue())
+        self.assertNotEqual(
+            first._ninja_operation_id("get_context"),
+            second._ninja_operation_id("get_context"),
+        )
 
     def test_discovery_omits_missing_index(self):
         with TemporaryDirectory() as directory:

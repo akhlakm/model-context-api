@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from functools import wraps
+from itertools import count
 from pathlib import Path
 from typing import Any, TypeVar
 from urllib.parse import quote, urlencode
@@ -26,6 +27,8 @@ from .schema import attach_components, build_request_schema
 F = TypeVar("F", bound=Callable[..., Any])
 
 _PATH_PARAMETER = re.compile(r"\{([^}]+)\}")
+_OPERATION_ID_NAMESPACE = re.compile(r"^[A-Za-z][A-Za-z0-9_-]*$")
+_NINJA_NAMESPACE_COUNTER = count(1)
 NinjaAuthCallback = Callable[[HttpRequest], Any]
 
 
@@ -69,15 +72,28 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         version: float = 1.0,
         usage: str | None = None,
         error_responses: Mapping[int, Any] | None = None,
+        operation_id_namespace: str | None = None,
     ):
         """Create a router bound to a Ninja ``API`` or ``Router`` instance.
 
         ``error_responses`` extends or overrides the default discovery errors
-        in the generated Ninja/OpenAPI registration.
+        in the generated Ninja/OpenAPI registration. ``operation_id_namespace``
+        identifies this registry's private Ninja/OpenAPI operation IDs; when
+        omitted, a unique process-local namespace is assigned.
         """
+        if operation_id_namespace is not None and (
+            not isinstance(operation_id_namespace, str)
+            or not _OPERATION_ID_NAMESPACE.fullmatch(operation_id_namespace)
+        ):
+            raise ValueError(
+                "operation_id_namespace must start with a letter and contain only letters, numbers, '-' or '_'."
+            )
         self.api = api
         self._bound_api: NinjaAPI | None = None
         self.error_responses = error_responses or {}
+        self._operation_id_namespace = operation_id_namespace or (
+            f"router_{next(_NINJA_NAMESPACE_COUNTER)}"
+        )
         super().__init__(
             guides_dir=guides_dir,
             mca_path=mca_path,
@@ -136,12 +152,17 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         route_options = dict(options)
         route_options["response"] = self._response_models(route_options.get("response"))
         route_options.update({key: variant[key] for key in ("include_in_schema",) if key in variant})
+        operation_id = variant.get("operation_id", route.operation)
         api_register(
             variant.get("path", route.path),
-            operation_id=variant.get("operation_id", route.operation),
+            operation_id=self._ninja_operation_id(operation_id),
             **route_options,
         )(self._http_endpoint(endpoint))
         return endpoint
+
+    def _ninja_operation_id(self, operation: str) -> str:
+        """Return the unique Ninja/OpenAPI ID for an MCA operation name."""
+        return f"mca__{self._operation_id_namespace}__{operation}"
 
     @staticmethod
     def _response_models(response: Any) -> dict[int, Any]:
@@ -405,10 +426,11 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
     ) -> Any:
         """Find a bound Ninja operation and optionally override its auth."""
         api = self._operation_api()
+        operation_id = self._ninja_operation_id(operation)
         for bound_router in api._get_bound_routers():
             for path_view in bound_router.path_operations.values():
                 for ninja_operation in path_view.operations:
-                    if ninja_operation.operation_id == operation:
+                    if ninja_operation.operation_id == operation_id:
                         if auth is not None:
                             original_operation = ninja_operation
                             ninja_operation = original_operation.clone()
@@ -452,18 +474,21 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
     @staticmethod
     def _find_openapi_operation(
         schema: Mapping[str, Any],
-        name: str,
+        operation_id: str,
     ) -> dict[str, Any] | None:
-        """Find an OpenAPI operation by ``operationId``."""
+        """Find an OpenAPI operation by its transport ``operationId``."""
         for path_data in schema.get("paths", {}).values():
             for operation in path_data.values():
-                if isinstance(operation, dict) and operation.get("operationId") == name:
+                if isinstance(operation, dict) and operation.get("operationId") == operation_id:
                     return operation
         return None
 
     def _openapi_operation(self, name: str) -> dict[str, Any] | None:
         """Return one operation from a freshly generated OpenAPI document."""
-        return self._find_openapi_operation(self._openapi_schema(), name)
+        return self._find_openapi_operation(
+            self._openapi_schema(),
+            self._ninja_operation_id(name),
+        )
 
     @staticmethod
     def _openapi_parameter_sections(
@@ -569,7 +594,10 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
         name = route.operation
         discovery_route = route.discovery_route
         openapi_schema = self._openapi_schema()
-        operation = self._find_openapi_operation(openapi_schema, name)
+        operation = self._find_openapi_operation(
+            openapi_schema,
+            self._ninja_operation_id(name),
+        )
         if operation is None:
             raise MCAError(
                 "unknown_operation",
@@ -596,7 +624,10 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
     async def _aroute_schema(self, route: RegisteredRoute) -> dict[str, Any]:
         """Build and asynchronously compose one operation discovery schema."""
         openapi_schema = self._openapi_schema()
-        operation = self._find_openapi_operation(openapi_schema, route.operation)
+        operation = self._find_openapi_operation(
+            openapi_schema,
+            self._ninja_operation_id(route.operation),
+        )
         if operation is None:
             raise MCAError(
                 "unknown_operation",
