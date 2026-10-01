@@ -322,3 +322,36 @@ class AsyncMCPHostTests(IsolatedAsyncioTestCase):
         host = _host()
         with self.assertRaisesRegex(RuntimeError, "overlaps"):
             host.register(items_registry, api_base_path="/api/items/private", description="Duplicate")
+
+    async def test_registration_replaces_duplicate_path_with_warning(self):
+        host = _host()
+        replacement = NinjaMCARouter(Router())
+
+        with self.assertLogs("mca.mcp", level="WARNING") as logs:
+            registration = host.register(
+                replacement,
+                api_base_path="/api/items/",
+                description="Reloaded items API.",
+            )
+
+        self.assertEqual(
+            logs.output,
+            [
+                "WARNING:mca.mcp:MCA API path '/api/items' was registered again; "
+                "replacing the previous registration."
+            ],
+        )
+        self.assertIs(registration.registry, replacement)
+        self.assertEqual(registration.description, "Reloaded items API.")
+        self.assertEqual(host._registrations, (registration,))
+
+    async def test_registration_rejects_distinct_parent_child_paths(self):
+        host = MCPHost()
+        host.register(items_registry, api_base_path="/api", description="API.")
+
+        with self.assertRaisesRegex(RuntimeError, "overlaps"):
+            host.register(
+                billing_registry,
+                api_base_path="/api/items",
+                description="Items API.",
+            )

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from collections.abc import Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -21,6 +22,7 @@ from .ninja import NinjaMCARouter
 
 BODY_METHODS = {"POST", "PUT", "PATCH"}
 MCP_TOOL_NAME = "mc_api"
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -127,7 +129,9 @@ class MCPHost:
         ``api_base_path`` is the complete URL prefix where the router is
         mounted by Django and Ninja. The required description is included in
         the shared ``mc_api`` tool description. Registrations may be added
-        before or after the host initializes.
+        before or after the host initializes. Re-registering an exact
+        normalized path replaces the previous registration with a warning;
+        other overlapping paths are rejected.
         """
         if not isinstance(registry, NinjaMCARouter):
             raise TypeError("registry must be a NinjaMCARouter.")
@@ -135,14 +139,28 @@ class MCPHost:
             raise ValueError("MCA API registration requires a non-empty description.")
 
         base_path = self._normalize_path(api_base_path)
-        if any(self._paths_overlap(base_path, item.api_base_path) for item in self._registrations):
-            raise RuntimeError(f"MCA API path '{base_path}' overlaps a registered API path.")
-
         registration = MCPRegistration(
             base_path,
             description.strip(),
             registry,
         )
+
+        for index, item in enumerate(self._registrations):
+            if item.api_base_path == base_path:
+                LOGGER.warning(
+                    "MCA API path '%s' was registered again; replacing the previous registration.",
+                    base_path,
+                )
+                self._registrations = (
+                    self._registrations[:index]
+                    + (registration,)
+                    + self._registrations[index + 1 :]
+                )
+                return registration
+
+            if self._paths_overlap(base_path, item.api_base_path):
+                raise RuntimeError(f"MCA API path '{base_path}' overlaps a registered API path.")
+
         self._registrations += (registration,)
         return registration
 
