@@ -514,21 +514,21 @@ class MCACompositionMixin:
             return
 
         request_properties = request_schema.get("properties", {})
-        local_has_transport = isinstance(request_properties, Mapping) and (
-            "path_params" in request_properties or "query_params" in request_properties
-        )
-        local_body = request_properties.get("body") if local_has_transport else request_schema
+        if not isinstance(request_properties, Mapping):
+            return
+        local_body = request_properties.get("body")
         remote_properties = remote_request.get("properties", {})
-        remote_body = remote_properties.get("body") if local_has_transport else remote_request
+        if not isinstance(remote_properties, Mapping):
+            return
+        remote_body = remote_properties.get("body")
         if remote_body is None:
             return
 
         if not self._is_generic_schema(local_body):
             return
 
-        target_schema = request_schema if local_has_transport else {}
         body_schema = self._merge_remote_fragment(
-            target_schema,
+            request_schema,
             remote_request,
             remote_body,
             public_operation,
@@ -539,18 +539,13 @@ class MCACompositionMixin:
             and "description" not in body_schema
         ):
             body_schema["description"] = local_body["description"]
-        if local_has_transport:
-            request_properties["body"] = body_schema
-            required = request_schema.setdefault("required", [])
-            if "body" in remote_request.get("required", []):
-                if "body" not in required:
-                    required.append("body")
-            else:
-                request_schema["required"] = [name for name in required if name != "body"]
+        request_properties["body"] = body_schema
+        required = request_schema.setdefault("required", [])
+        if "body" in remote_request.get("required", []):
+            if "body" not in required:
+                required.append("body")
         else:
-            if target_schema.get("components"):
-                body_schema["components"] = target_schema["components"]
-            composed["request_schema"] = body_schema
+            request_schema["required"] = [name for name in required if name != "body"]
 
     def _compose_remote_response(
         self,

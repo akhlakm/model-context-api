@@ -284,7 +284,13 @@ class PydanticMCARouterPackageTests(TestCase):
                                 "route": "POST private/invoices",
                                 "description": "Create an invoice.",
                                 "request_schema": {
-                                    "$ref": "#/components/schemas/PrivateInvoiceCreate",
+                                    "type": "object",
+                                    "properties": {
+                                        "body": {
+                                            "$ref": "#/components/schemas/PrivateInvoiceCreate",
+                                        },
+                                    },
+                                    "required": ["body"],
                                     "components": {
                                         "schemas": {
                                             "PrivateInvoiceCreate": {
@@ -344,11 +350,12 @@ class PydanticMCARouterPackageTests(TestCase):
             schema["request_schema"]["type"],
             "object",
         )
+        self.assertEqual(schema["request_schema"]["required"], ["body"])
         self.assertEqual(
             schema["response_schema"]["type"],
             "object",
         )
-        self.assertIn("customer", schema["request_schema"]["properties"])
+        self.assertIn("customer", schema["request_schema"]["properties"]["body"]["properties"])
         self.assertIn("invoice_id", schema["response_schema"]["properties"])
         self.assertNotIn("components", schema["request_schema"])
         self.assertNotIn("components", schema["response_schema"])
@@ -363,6 +370,7 @@ class PydanticMCARouterPackageTests(TestCase):
             typed_schema["request_schema"]["type"],
             "object",
         )
+        self.assertIn("body", typed_schema["request_schema"]["properties"])
         self.assertEqual(
             typed_schema["response_schema"]["type"],
             "object",

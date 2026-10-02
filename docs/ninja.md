@@ -137,7 +137,9 @@ Routes registered with MCA are relative to the NinjaAPI mount. Both slash
 forms are registered for non-root routes; the alternate form is hidden from
 the generated schema and discovery output. Operation schemas are built from
 Django Ninja's OpenAPI schema and describe `path_params`, `query_params`, and
-`body`.
+`body`. Each section is a property of the logical request envelope; for a
+body-only operation, the JSON request-body schema is still nested under
+`properties.body`.
 
 This means a client can use the same API in two ways:
 

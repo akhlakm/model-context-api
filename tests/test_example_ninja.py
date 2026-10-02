@@ -142,20 +142,20 @@ class NinjaCompositionExampleTests(TestCase):
         )
         self.assertEqual(
             create_schema["request_schema"]["required"],
-            ["customer", "total"],
+            ["body"],
         )
         self.assertEqual(
-            create_schema["request_schema"]["description"],
+            create_schema["request_schema"]["properties"]["body"]["description"],
             "Fields required to create a new invoice.",
         )
         self.assertEqual(
-            create_schema["request_schema"]["properties"]["customer"][
+            create_schema["request_schema"]["properties"]["body"]["properties"]["customer"][
                 "description"
             ],
             "Name of the customer billed by the invoice.",
         )
         self.assertEqual(
-            create_schema["request_schema"]["properties"]["total"][
+            create_schema["request_schema"]["properties"]["body"]["properties"]["total"][
                 "description"
             ],
             "Total amount of the invoice in the example currency.",

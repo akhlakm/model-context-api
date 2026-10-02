@@ -61,9 +61,9 @@ def build_request_schema(
 ) -> dict[str, Any] | None:
     """Build an MCA request schema from adapter-specific sections.
 
-    A body-only operation is represented by the body schema itself.  Operations
-    that also expose path or query parameters retain the named sections so the
-    caller can distinguish transport parameters from JSON body data.
+    Path, query, and JSON body inputs are represented as named properties so
+    callers can distinguish transport parameters from request data.  The body
+    property retains the OpenAPI request-body schema unchanged.
     """
     properties: dict[str, Any] = {}
     required: list[str] = []
@@ -86,11 +86,6 @@ def build_request_schema(
             "description",
             _schema_description(body_property, components) or "JSON request body.",
         )
-
-        if not properties:
-            if components:
-                body_property["components"] = {"schemas": deepcopy(dict(components))}
-            return body_property
 
         properties["body"] = body_property
         if body_required:

@@ -94,6 +94,15 @@ request shape:
 }
 ~~~
 
+Operations with a JSON body use the same envelope. For example, `make_item`
+publishes its input under `body`:
+
+~~~json
+{
+  "body": {"name": "Example", "description": "Created by an agent."}
+}
+~~~
+
 Dispatch by operation name or by an HTTP method and route path:
 
 ~~~python
