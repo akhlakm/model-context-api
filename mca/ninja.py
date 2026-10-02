@@ -22,7 +22,8 @@ from .base import BaseMCARouter, MCAError, RegisteredRoute
 from .composition import MCACompositionMixin
 from .models import ErrorOut, MCADiscoveryOut, MCAResponseOut
 from .request import build_request
-from .schema import attach_components, build_request_schema
+from .schema import (attach_components, build_request_schema,
+                     build_response_schema)
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -588,7 +589,7 @@ class NinjaMCARouter(MCACompositionMixin, BaseMCARouter):
             return None
         response_schema = deepcopy(response_schema)
         response_components = self._referenced_components(response_schema, components)
-        return attach_components(response_schema, response_components)
+        return build_response_schema(response_schema, response_components)
 
     def _route_schema(self, route: RegisteredRoute) -> dict[str, Any]:
         """Build and compose one operation schema from the Ninja OpenAPI document."""

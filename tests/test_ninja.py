@@ -143,7 +143,11 @@ class FakeMCAClient:
                     "description": "Read a private invoice.",
                     "guides": ["invoices.md"],
                     "request_schema": None,
-                    "response_schema": {"type": "object"},
+                    "response_schema": {
+                        "type": "object",
+                        "properties": {"body": {"type": "object"}},
+                        "required": ["body"],
+                    },
                 }
                 for name in (operation or "").split(",")
             }
@@ -417,6 +421,12 @@ class NinjaMCARouterPackageTests(TestCase):
         )
 
         self.assertEqual(schema["route"], "GET items/{item_id}")
+        self.assertEqual(schema["response_schema"]["type"], "object")
+        self.assertEqual(schema["response_schema"]["required"], ["body"])
+        self.assertEqual(
+            schema["response_schema"]["properties"]["body"]["type"],
+            "object",
+        )
         self.assertIn("/v1/items/{item_id}", root_schema["paths"])
         self.assertEqual(denied_response.status_code, 401)
         self.assertEqual(response.status_code, 200)
@@ -499,7 +509,11 @@ class NinjaMCARouterPackageTests(TestCase):
                                     },
                                 },
                                 "response_schema": {
-                                    "$ref": "#/components/schemas/PrivateInvoice",
+                                    "type": "object",
+                                    "properties": {
+                                        "body": {"$ref": "#/components/schemas/PrivateInvoice"},
+                                    },
+                                    "required": ["body"],
                                     "components": {
                                         "schemas": {
                                             "PrivateInvoice": {
@@ -544,7 +558,8 @@ class NinjaMCARouterPackageTests(TestCase):
             "object",
         )
         self.assertIn("include_history", request_schema["properties"]["body"]["properties"])
-        self.assertIn("invoice_id", response_schema["properties"])
+        self.assertEqual(response_schema["required"], ["body"])
+        self.assertIn("invoice_id", response_schema["properties"]["body"]["properties"])
         self.assertNotIn("components", request_schema)
         self.assertNotIn("components", response_schema)
         self.assertNotIn("#/components/", repr(schema))
@@ -583,6 +598,66 @@ class NinjaMCARouterPackageTests(TestCase):
         )
         self.assertIn("Node", schema["$defs"])
         self.assertNotIn("components", schema)
+
+    def test_delegated_recursive_bodies_keep_remote_definitions(self):
+        router = NinjaMCARouter(FakeAPI())
+        remote = {
+            "type": "object",
+            "properties": {
+                "body": {
+                    "type": "object",
+                    "properties": {"child": {"$ref": "#/$defs/Node"}},
+                },
+            },
+            "required": ["body"],
+            "$defs": {
+                "Node": {
+                    "type": "object",
+                    "properties": {"child": {"$ref": "#/$defs/Node"}},
+                },
+            },
+        }
+        composed = {
+            "request_schema": {
+                "type": "object",
+                "properties": {
+                    "path_params": {"$ref": "#/components/schemas/Local"},
+                    "body": {"type": "object"},
+                },
+                "required": ["path_params", "body"],
+                "components": {
+                    "schemas": {
+                        "Local": {
+                            "type": "object",
+                            "properties": {"next": {"$ref": "#/components/schemas/Local"}},
+                        },
+                    },
+                },
+            },
+            "response_schema": None,
+        }
+
+        router._compose_remote_request(composed, remote, "get_node")
+        router._compose_remote_response(composed, remote, "get_node")
+        result = router._materialize_composed_schema(composed)
+
+        request = result["request_schema"]
+        response = result["response_schema"]
+        self.assertEqual(
+            request["properties"]["body"]["properties"]["child"]["$ref"],
+            "#/$defs/Node",
+        )
+        self.assertEqual(
+            request["properties"]["path_params"]["properties"]["next"]["$ref"],
+            "#/$defs/Local",
+        )
+        self.assertEqual(set(request["$defs"]), {"Local", "Node"})
+        self.assertEqual(response["type"], "object")
+        self.assertEqual(
+            response["properties"]["body"]["properties"]["child"]["$ref"],
+            "#/$defs/Node",
+        )
+        self.assertIn("Node", response["$defs"])
 
     def test_public_handler_can_authenticate_then_call_private_client(self):
         events = []
@@ -711,7 +786,11 @@ class AsyncNinjaMCARouterTests(IsolatedAsyncioTestCase):
                             "description": "Read an invoice.",
                             "guides": [],
                             "request_schema": None,
-                            "response_schema": {"type": "object"},
+                            "response_schema": {
+                                "type": "object",
+                                "properties": {"body": {"type": "object"}},
+                                "required": ["body"],
+                            },
                         }
                     }
                 }
@@ -754,7 +833,11 @@ class AsyncNinjaMCARouterTests(IsolatedAsyncioTestCase):
                             "description": f"Read {name}.",
                             "guides": ["invoices.md"],
                             "request_schema": None,
-                            "response_schema": {"type": "object"},
+                            "response_schema": {
+                                "type": "object",
+                                "properties": {"body": {"type": "object"}},
+                                "required": ["body"],
+                            },
                         }
                         for name in (operation or "").split(",")
                     }

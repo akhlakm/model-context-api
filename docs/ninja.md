@@ -139,7 +139,10 @@ the generated schema and discovery output. Operation schemas are built from
 Django Ninja's OpenAPI schema and describe `path_params`, `query_params`, and
 `body`. Each section is a property of the logical request envelope; for a
 body-only operation, the JSON request-body schema is still nested under
-`properties.body`.
+`properties.body`. A declared successful JSON response uses the same envelope:
+`response_schema.type` is `object`, and the response payload schema is at
+`response_schema.properties.body`. Operations without a declared JSON response
+have `response_schema: null`.
 
 This means a client can use the same API in two ways:
 

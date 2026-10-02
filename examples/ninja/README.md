@@ -11,7 +11,7 @@ This example runs a small Django server with two MCA routers:
 The public handlers use generic JSON-compatible types and do not import the
 private service's Pydantic models. During discovery, the public router fetches
 and caches the private request and response schemas in one batched RPC request,
-then uses them for generic public body and response schemas while retaining the
+then publishes them as the public body and response schemas while retaining the
 public HTTP route and path/query parameters.
 
 For detailed adapter, composition, and MCP usage, see [Django Ninja

@@ -164,20 +164,22 @@ class NinjaCompositionExampleTests(TestCase):
             create_schema["response_schema"]["type"],
             "object",
         )
+        self.assertEqual(create_schema["response_schema"]["required"], ["body"])
+        response_body = create_schema["response_schema"]["properties"]["body"]
         self.assertEqual(
-            create_schema["response_schema"]["description"],
+            response_body["description"],
             "Invoice returned by the billing service.",
         )
         self.assertIn(
             "invoice_id",
-            create_schema["response_schema"]["properties"],
+            response_body["properties"],
         )
         self.assertEqual(
-            create_schema["response_schema"]["properties"]["invoice_id"]["description"],
+            response_body["properties"]["invoice_id"]["description"],
             "Unique identifier of the invoice.",
         )
         self.assertEqual(
-            create_schema["response_schema"]["properties"]["status"]["description"],
+            response_body["properties"]["status"]["description"],
             "Current lifecycle status of the invoice.",
         )
         self.assertNotIn("components", create_schema["request_schema"])

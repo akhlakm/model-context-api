@@ -14,7 +14,7 @@ from .base import BaseMCARouter, MCAError, RegisteredRoute
 from .composition import MCACompositionMixin
 from .models import (APIRouteSchemaOut, DiscoveryParams, MCADiscoveryOut,
                      MCAResponseOut)
-from .schema import attach_components, build_request_schema
+from .schema import build_request_schema, build_response_schema
 
 F = TypeVar("F", bound=Callable[..., Any])
 
@@ -249,7 +249,7 @@ class PydanticMCARouter(MCACompositionMixin, BaseMCARouter):
         if response_type is None or response_type is Any:
             return None
         response_schema, response_components = self._referenced_schema(response_type)
-        return attach_components(response_schema, response_components)
+        return build_response_schema(response_schema, response_components)
 
     def _route_schema(self, route: RegisteredRoute) -> APIRouteSchemaOut:
         """Build and compose the discovery schema for one operation."""

@@ -81,7 +81,10 @@ def get_public_invoice(params: InvoiceParams) -> InvoiceOut:
     return InvoiceOut(**result)
 ~~~
 
-Discovery publishes `get_public_invoice` and its public schema. The private
+Discovery publishes `get_public_invoice` under its public route. Its fetched
+private request and response bodies appear under `properties.body` in the
+respective public discovery schemas, while public path and query parameters
+remain in the request schema. The private
 operation remains unavailable as `billing.get_invoice` through the public
 router. Guides attached to the delegated private operation are available under
 names such as `billing/invoices.md`; unassociated private operations and
@@ -118,8 +121,8 @@ def get_invoice(request, invoice_id: int):
 The handler can apply authentication, ACL, tracking, or input transformation
 before calling the private operation. `delegate_to` is discovery metadata and
 is not passed to Django Ninja. The public operation name and route remain
-authoritative, so discovery publishes `get_invoice` and its public
-request/response schema—not the private route.
+authoritative. Discovery publishes `get_invoice` on that public route with
+the fetched private request and response body schemas.
 
 Guides attached to the private operation are available under names such as
 `billing/invoices.md`. Private operations and unassociated private guides are

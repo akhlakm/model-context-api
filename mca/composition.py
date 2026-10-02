@@ -11,8 +11,8 @@ from pydantic import ValidationError
 
 from .base import MCAError, RegisteredRoute
 from .models import APIRouteSchemaOut, MCADiscoveryOut, MCAResponseOut
-from .schema import (is_generic_schema, materialize_schema,
-                     merge_remote_fragment, rewrite_component_refs)
+from .schema import (materialize_schema, merge_remote_fragment,
+                     rewrite_component_refs)
 
 
 class MCAClient(Protocol):
@@ -473,11 +473,6 @@ class MCACompositionMixin:
         return result
 
     @staticmethod
-    def _is_generic_schema(schema: Any) -> bool:
-        """Return whether a local schema is too generic to improve a remote one."""
-        return is_generic_schema(schema)
-
-    @staticmethod
     def _rewrite_component_refs(value: Any, names: Mapping[str, str]) -> Any:
         """Rewrite component references after names are collision-resolved."""
         return rewrite_component_refs(value, names)
@@ -508,24 +503,19 @@ class MCACompositionMixin:
         remote_request: Mapping[str, Any],
         public_operation: str,
     ) -> None:
-        """Replace a generic public body schema with the delegated contract."""
-        request_schema = composed.get("request_schema")
-        if not isinstance(request_schema, dict):
-            return
-
-        request_properties = request_schema.get("properties", {})
-        if not isinstance(request_properties, Mapping):
-            return
-        local_body = request_properties.get("body")
+        """Publish the delegated body with the public route's path/query inputs."""
         remote_properties = remote_request.get("properties", {})
         if not isinstance(remote_properties, Mapping):
             return
         remote_body = remote_properties.get("body")
-        if remote_body is None:
+        if not isinstance(remote_body, Mapping):
             return
 
-        if not self._is_generic_schema(local_body):
-            return
+        request_schema = composed.get("request_schema")
+        if not isinstance(request_schema, dict):
+            request_schema = {"type": "object", "properties": {}, "required": []}
+            composed["request_schema"] = request_schema
+        request_properties = request_schema.setdefault("properties", {})
 
         body_schema = self._merge_remote_fragment(
             request_schema,
@@ -533,12 +523,6 @@ class MCACompositionMixin:
             remote_body,
             public_operation,
         )
-        if (
-            isinstance(local_body, Mapping)
-            and local_body.get("description") is not None
-            and "description" not in body_schema
-        ):
-            body_schema["description"] = local_body["description"]
         request_properties["body"] = body_schema
         required = request_schema.setdefault("required", [])
         if "body" in remote_request.get("required", []):
@@ -553,25 +537,28 @@ class MCACompositionMixin:
         remote_response: Mapping[str, Any] | None,
         public_operation: str,
     ) -> None:
-        """Replace a generic public response schema with the delegated response contract."""
+        """Publish the delegated response body in the canonical envelope."""
         if remote_response is None:
             return
-        local_response = composed.get("response_schema")
-        if local_response is not None and not self._is_generic_schema(local_response):
+        remote_properties = remote_response.get("properties", {})
+        if not isinstance(remote_properties, Mapping):
+            return
+        remote_body = remote_properties.get("body")
+        if not isinstance(remote_body, Mapping):
             return
 
-        response_container: dict[str, Any] = {}
-        response_fragment = deepcopy(dict(remote_response))
-        response_fragment.pop("components", None)
-        response_fragment = self._merge_remote_fragment(
-            response_container,
+        response_schema: dict[str, Any] = {
+            "type": "object",
+            "properties": {},
+            "required": ["body"],
+        }
+        response_schema["properties"]["body"] = self._merge_remote_fragment(
+            response_schema,
             remote_response,
-            response_fragment,
+            remote_body,
             public_operation,
         )
-        if response_container.get("components"):
-            response_fragment["components"] = response_container["components"]
-        composed["response_schema"] = response_fragment
+        composed["response_schema"] = response_schema
 
     def _materialize_composed_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
         """Make request and response schemas self-contained before serialization."""

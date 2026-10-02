@@ -7,6 +7,7 @@ from copy import deepcopy
 from typing import Any, Callable
 
 _COMPONENT_REF_PREFIX = "#/components/schemas/"
+_DEFINITION_REF_PREFIX = "#/$defs/"
 
 
 def _schema_description(
@@ -27,28 +28,6 @@ def _schema_description(
         return None
     component_description = component.get("description")
     return component_description if isinstance(component_description, str) else None
-
-
-def is_generic_schema(schema: Any) -> bool:
-    """Return whether a local schema carries no useful structural contract."""
-    if not isinstance(schema, Mapping) or not schema:
-        return True
-    if "$ref" in schema:
-        return False
-    if schema.get("type") not in (None, "object"):
-        return False
-    return not any(
-        key in schema
-        for key in (
-            "properties",
-            "items",
-            "enum",
-            "const",
-            "allOf",
-            "anyOf",
-            "oneOf",
-        )
-    )
 
 
 def build_request_schema(
@@ -114,43 +93,58 @@ def attach_components(
     return schema
 
 
+def build_response_schema(
+    body_schema: Mapping[str, Any],
+    components: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Wrap a successful JSON response body in the MCA response envelope."""
+    response_schema = {
+        "type": "object",
+        "properties": {"body": deepcopy(dict(body_schema))},
+        "required": ["body"],
+    }
+    return attach_components(response_schema, components or {})
+
+
 def _transform_refs(
     value: Any,
     on_reference: Callable[[dict[str, Any], str], Any | None],
+    prefix: str = _COMPONENT_REF_PREFIX,
 ) -> Any:
-    """Walk a JSON-like schema and let a callback replace component references."""
+    """Walk a JSON-like schema and let a callback replace matching references."""
     if isinstance(value, list):
-        return [_transform_refs(item, on_reference) for item in value]
+        return [_transform_refs(item, on_reference, prefix) for item in value]
     if not isinstance(value, dict):
         return value
 
     reference = value.get("$ref")
-    if isinstance(reference, str) and reference.startswith(_COMPONENT_REF_PREFIX):
-        replacement = on_reference(value, reference.removeprefix(_COMPONENT_REF_PREFIX))
+    if isinstance(reference, str) and reference.startswith(prefix):
+        replacement = on_reference(value, reference.removeprefix(prefix))
         if replacement is not None:
             return replacement
     return {
-        key: _transform_refs(item, on_reference)
+        key: _transform_refs(item, on_reference, prefix)
         for key, item in value.items()
     }
 
 
-def rewrite_component_refs(value: Any, names: Mapping[str, str]) -> Any:
-    """Rewrite component references after component names have been merged.
-
-    The traversal preserves sibling keys next to ``$ref`` so descriptions or
-    validation metadata attached by an upstream schema are not discarded.
-    """
+def _rewrite_refs(value: Any, names: Mapping[str, str], prefix: str) -> Any:
+    """Rename references without discarding metadata alongside ``$ref``."""
     def on_reference(value: dict[str, Any], name: str) -> dict[str, Any]:
         """Rewrite a reference and recursively preserve its sibling values."""
         rewritten = {
-            key: _transform_refs(item, on_reference)
+            key: _transform_refs(item, on_reference, prefix)
             for key, item in value.items()
         }
-        rewritten["$ref"] = f"{_COMPONENT_REF_PREFIX}{names.get(name, name)}"
+        rewritten["$ref"] = f"{prefix}{names.get(name, name)}"
         return rewritten
 
-    return _transform_refs(value, on_reference)
+    return _transform_refs(value, on_reference, prefix)
+
+
+def rewrite_component_refs(value: Any, names: Mapping[str, str]) -> Any:
+    """Rewrite component references after component names have been merged."""
+    return _rewrite_refs(value, names, _COMPONENT_REF_PREFIX)
 
 
 def merge_remote_fragment(
@@ -159,7 +153,7 @@ def merge_remote_fragment(
     fragment: Mapping[str, Any],
     public_operation: str,
 ) -> dict[str, Any]:
-    """Copy a remote fragment and its components into a public schema."""
+    """Copy a remote fragment, components, and definitions into a public schema."""
     remote_components = (
         remote_schema.get("components", {}).get("schemas", {})
         if isinstance(remote_schema.get("components", {}), Mapping)
@@ -187,7 +181,38 @@ def merge_remote_fragment(
 
     if not target_components:
         target_schema.pop("components", None)
-    return rewrite_component_refs(deepcopy(fragment), names)
+
+    remote_definitions = remote_schema.get("$defs", {})
+    definition_names: dict[str, str] = {}
+    if isinstance(remote_definitions, Mapping) and remote_definitions:
+        target_definitions = target_schema.setdefault("$defs", {})
+        for name, definition in remote_definitions.items():
+            candidate = name
+            if candidate in target_components or (
+                candidate in target_definitions and target_definitions[candidate] != definition
+            ):
+                candidate = f"{public_operation}__{name}"
+                suffix = 2
+                while candidate in target_components or (
+                    candidate in target_definitions and target_definitions[candidate] != definition
+                ):
+                    candidate = f"{public_operation}__{name}_{suffix}"
+                    suffix += 1
+            definition_names[name] = candidate
+        for name, definition in remote_definitions.items():
+            candidate = definition_names[name]
+            if candidate not in target_definitions:
+                target_definitions[candidate] = _rewrite_refs(
+                    rewrite_component_refs(deepcopy(definition), names),
+                    definition_names,
+                    _DEFINITION_REF_PREFIX,
+                )
+
+    return _rewrite_refs(
+        rewrite_component_refs(deepcopy(fragment), names),
+        definition_names,
+        _DEFINITION_REF_PREFIX,
+    )
 
 
 def materialize_schema(schema: Any) -> Any:
@@ -245,8 +270,8 @@ def materialize_schema(schema: Any) -> Any:
 
     materialized = _transform_refs(materialized, expanding_reference)
     if recursive and isinstance(materialized, dict):
-        materialized["$defs"] = {
+        materialized.setdefault("$defs", {}).update({
             name: _transform_refs(component, definitions_reference)
             for name, component in components.items()
-        }
+        })
     return materialized

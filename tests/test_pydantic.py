@@ -48,7 +48,11 @@ class FakeMCAClient:
                     "description": "Read an invoice.",
                     "guides": ["invoices.md"],
                     "request_schema": None,
-                    "response_schema": {"type": "object"},
+                    "response_schema": {
+                        "type": "object",
+                        "properties": {"body": {"type": "object"}},
+                        "required": ["body"],
+                    },
                 }
                 for _ in operation.split(",")
             }
@@ -83,9 +87,34 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertNotIn("index.md", discovery.available_guides)
         details = self.router.dispatch("get_context", params={"operation": "get_item"})
         self.assertEqual(details.operations["get_item"].route, "GET items/{item_id}")
+        response_schema = details.operations["get_item"].response_schema
+        self.assertEqual(response_schema["type"], "object")
+        self.assertEqual(response_schema["required"], ["body"])
+        self.assertEqual(
+            response_schema["properties"]["body"]["properties"]["item_id"]["type"],
+            "integer",
+        )
         self.assertNotIn("guides", details.model_dump())
         self.assertNotIn("operation", details.operations["get_item"].model_dump())
         self.assertEqual(result.item_id, 7)
+
+    def test_response_envelope_has_type_when_payload_uses_union(self):
+        router = PydanticMCARouter()
+
+        @router.register("/value")
+        def get_value() -> int | str:
+            return 1
+
+        @router.register("/empty")
+        def get_empty():
+            return None
+
+        response = router._route_schema(router.route("get_value")).response_schema
+        self.assertEqual(response["type"], "object")
+        self.assertEqual(response["required"], ["body"])
+        self.assertIn("anyOf", response["properties"]["body"])
+        self.assertNotIn("type", response["properties"]["body"])
+        self.assertIsNone(router._route_schema(router.route("get_empty")).response_schema)
 
     def test_operations_can_be_registered_by_name_without_a_route(self):
         router = PydanticMCARouter()
@@ -273,7 +302,7 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertEqual(context.exception.code, "unknown_guides")
         self.assertEqual(context.exception.status, 404)
 
-    def test_delegated_schema_composes_remote_body_and_response_for_generic_types(self):
+    def test_delegated_schema_uses_remote_body_and_response_for_all_public_types(self):
         class SchemaClient(FakeMCAClient):
             def discover(self, *, guide=None, operation=None):
                 if operation == "make_invoice":
@@ -305,7 +334,11 @@ class PydanticMCARouterPackageTests(TestCase):
                                     },
                                 },
                                 "response_schema": {
-                                    "$ref": "#/components/schemas/PrivateInvoice",
+                                    "type": "object",
+                                    "properties": {
+                                        "body": {"$ref": "#/components/schemas/PrivateInvoice"},
+                                    },
+                                    "required": ["body"],
                                     "components": {
                                         "schemas": {
                                             "PrivateInvoice": {
@@ -334,11 +367,18 @@ class PydanticMCARouterPackageTests(TestCase):
             return client.call("make_invoice", data=data)
 
         @router.register(
-            "/typed-invoices",
+            "/typed-invoices/{item_id}",
             delegate_to="billing.make_invoice",
         )
-        def make_typed_invoice(data: ItemOut) -> ItemOut:
+        def make_typed_invoice(params: ItemParams, data: ItemOut) -> ItemOut:
             return ItemOut(**client.call("make_invoice", data=data.model_dump()))
+
+        @router.register(
+            "/untyped-invoices",
+            delegate_to="billing.make_invoice",
+        )
+        def make_untyped_invoice():
+            return client.call("make_invoice")
 
         details = router.dispatch(
             "get_context",
@@ -355,8 +395,15 @@ class PydanticMCARouterPackageTests(TestCase):
             schema["response_schema"]["type"],
             "object",
         )
-        self.assertIn("customer", schema["request_schema"]["properties"]["body"]["properties"])
-        self.assertIn("invoice_id", schema["response_schema"]["properties"])
+        self.assertIn(
+            "customer",
+            schema["request_schema"]["properties"]["body"]["properties"],
+        )
+        self.assertEqual(schema["response_schema"]["required"], ["body"])
+        self.assertIn(
+            "invoice_id",
+            schema["response_schema"]["properties"]["body"]["properties"],
+        )
         self.assertNotIn("components", schema["request_schema"])
         self.assertNotIn("components", schema["response_schema"])
         self.assertEqual(client.discovery_calls.count((None, "make_invoice")), 1)
@@ -372,10 +419,43 @@ class PydanticMCARouterPackageTests(TestCase):
         )
         self.assertIn("body", typed_schema["request_schema"]["properties"])
         self.assertEqual(
+            typed_schema["request_schema"]["properties"]["path_params"]["properties"]["item_id"]["type"],
+            "integer",
+        )
+        self.assertIn(
+            "customer",
+            typed_schema["request_schema"]["properties"]["body"]["properties"],
+        )
+        self.assertNotIn(
+            "item_id",
+            typed_schema["request_schema"]["properties"]["body"]["properties"],
+        )
+        self.assertEqual(
             typed_schema["response_schema"]["type"],
             "object",
         )
-        self.assertIn("item_id", typed_schema["response_schema"]["properties"])
+        self.assertIn(
+            "invoice_id",
+            typed_schema["response_schema"]["properties"]["body"]["properties"],
+        )
+        self.assertNotIn(
+            "item_id",
+            typed_schema["response_schema"]["properties"]["body"]["properties"],
+        )
+
+        untyped_schema = router.dispatch(
+            "get_context",
+            params={"operation": "make_untyped_invoice"},
+        ).operations["make_untyped_invoice"]
+        self.assertEqual(untyped_schema.request_schema["required"], ["body"])
+        self.assertIn(
+            "customer",
+            untyped_schema.request_schema["properties"]["body"]["properties"],
+        )
+        self.assertIn(
+            "invoice_id",
+            untyped_schema.response_schema["properties"]["body"]["properties"],
+        )
 
     def test_delegated_schema_discovery_batches_per_namespace(self):
         class BatchClient:
@@ -392,7 +472,13 @@ class PydanticMCARouterPackageTests(TestCase):
                             "request_schema": None,
                             "response_schema": {
                                 "type": "object",
-                                "properties": {"operation": {"const": name}},
+                                "properties": {
+                                    "body": {
+                                        "type": "object",
+                                        "properties": {"operation": {"const": name}},
+                                    },
+                                },
+                                "required": ["body"],
                             },
                         }
                         for name in (operation or "").split(",")
@@ -566,7 +652,11 @@ class AsyncPydanticMCARouterTests(IsolatedAsyncioTestCase):
                             "description": "Read an invoice.",
                             "guides": [],
                             "request_schema": None,
-                            "response_schema": {"type": "object"},
+                            "response_schema": {
+                                "type": "object",
+                                "properties": {"body": {"type": "object"}},
+                                "required": ["body"],
+                            },
                         }
                     }
                 }
@@ -615,7 +705,13 @@ class AsyncPydanticMCARouterTests(IsolatedAsyncioTestCase):
                             "request_schema": None,
                             "response_schema": {
                                 "type": "object",
-                                "properties": {"invoice_id": {"type": "integer"}},
+                                "properties": {
+                                    "body": {
+                                        "type": "object",
+                                        "properties": {"invoice_id": {"type": "integer"}},
+                                    },
+                                },
+                                "required": ["body"],
                             },
                         }
                         for name in (operation or "").split(",")
@@ -648,6 +744,10 @@ class AsyncPydanticMCARouterTests(IsolatedAsyncioTestCase):
         self.assertEqual(
             details.operations["get_public_invoice"].response_schema["type"],
             "object",
+        )
+        self.assertEqual(
+            details.operations["get_public_invoice"].response_schema["properties"]["body"]["properties"]["invoice_id"]["type"],
+            "integer",
         )
         self.assertEqual(client.sync_calls, [])
         self.assertEqual(client.async_calls, [(None, "get_invoice")])

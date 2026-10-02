@@ -48,7 +48,7 @@ class APIRouteSchemaOut(BaseModel):
         description="Relevant guide names for this operation.",
     )
     request_schema: dict[str, Any] | None = Field(None, description="Logical operation input schema.")
-    response_schema: dict[str, Any] | None = Field(None, description="Successful response schema.")
+    response_schema: dict[str, Any] | None = Field(None, description="Logical successful response envelope.")
 
 
 class MCADiscoveryOut(BaseModel):

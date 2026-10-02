@@ -103,6 +103,11 @@ publishes its input under `body`:
 }
 ~~~
 
+Discovery also wraps a declared successful response: `response_schema.type`
+is `object`, and the return value's schema is at
+`response_schema.properties.body`. When no return schema is declared,
+`response_schema` is `null`.
+
 Dispatch by operation name or by an HTTP method and route path:
 
 ~~~python
