@@ -20,6 +20,7 @@ django.setup()
 
 from unittest import IsolatedAsyncioTestCase, TestCase
 
+from jsonschema import Draft202012Validator
 from ninja import NinjaAPI, Router
 
 from mca.base import MCAError
@@ -658,6 +659,13 @@ class NinjaMCARouterPackageTests(TestCase):
             "#/$defs/Node",
         )
         self.assertIn("Node", response["$defs"])
+        for envelope in (request, response):
+            Draft202012Validator.check_schema(envelope)
+        Draft202012Validator(request).validate({
+            "path_params": {},
+            "body": {"child": {"child": {}}},
+        })
+        Draft202012Validator(response).validate({"body": {"child": {"child": {}}}})
 
     def test_public_handler_can_authenticate_then_call_private_client(self):
         events = []

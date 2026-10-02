@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection, Mapping
 from copy import deepcopy
 from typing import Any, Callable
+
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import SchemaError
 
 _COMPONENT_REF_PREFIX = "#/components/schemas/"
 _DEFINITION_REF_PREFIX = "#/$defs/"
@@ -104,6 +108,28 @@ def build_response_schema(
         "required": ["body"],
     }
     return attach_components(response_schema, components or {})
+
+
+def validate_discovery_envelope(
+    schema: Any,
+    *,
+    response: bool,
+) -> None:
+    """Require a canonical envelope that conforms to JSON Schema Draft 2020-12."""
+    if not isinstance(schema, Mapping):
+        raise SchemaError("Discovery envelope must be a JSON Schema object.")
+    try:
+        json.dumps(schema, allow_nan=False)
+    except (TypeError, ValueError) as exc:
+        raise SchemaError("Discovery envelope must contain JSON values.") from exc
+    Draft202012Validator.check_schema(schema)
+    properties = schema.get("properties")
+    if schema.get("type") != "object" or not isinstance(properties, Mapping):
+        raise SchemaError("Discovery envelope must declare object properties.")
+    if response and (
+        "body" not in properties or "body" not in schema.get("required", [])
+    ):
+        raise SchemaError("Response envelope must require a body property.")
 
 
 def _transform_refs(

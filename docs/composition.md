@@ -90,6 +90,10 @@ router. Guides attached to the delegated private operation are available under
 names such as `billing/invoices.md`; unassociated private operations and
 guides remain undiscoverable.
 
+Before publishing an operation, MCA validates each non-null request and
+response envelope against JSON Schema Draft 2020-12. An invalid envelope
+raises `invalid_schema` rather than appearing in discovery.
+
 ## NinjaMCARouter
 
 Ninja composition follows the same explicit model. Mounting a private client

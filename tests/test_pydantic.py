@@ -116,6 +116,58 @@ class PydanticMCARouterPackageTests(TestCase):
         self.assertNotIn("type", response["properties"]["body"])
         self.assertIsNone(router._route_schema(router.route("get_empty")).response_schema)
 
+    def test_invalid_discovery_envelope_is_rejected(self):
+        for invalid_body in (
+            {"type": "not-a-json-schema-type"},
+            {"default": object()},
+        ):
+            envelope = {
+                "type": "object",
+                "properties": {"body": invalid_body},
+                "required": ["body"],
+            }
+            for key in ("request_schema", "response_schema"):
+                with self.subTest(body=invalid_body, schema=key):
+                    schemas = {"request_schema": None, "response_schema": None}
+                    schemas[key] = envelope
+                    with self.assertRaises(MCAError) as context:
+                        self.router._materialize_composed_schema(schemas)
+                    self.assertEqual(context.exception.code, "invalid_schema")
+                    self.assertEqual(context.exception.field, key)
+                    self.assertEqual(context.exception.status, 500)
+
+    def test_invalid_remote_body_is_rejected_from_discovery(self):
+        class InvalidSchemaClient:
+            def discover(self, *, guide=None, operation=None):
+                return {
+                    "operations": {
+                        "get_bad": {
+                            "route": "GET private/bad",
+                            "description": "Invalid upstream schema.",
+                            "request_schema": None,
+                            "response_schema": {
+                                "type": "object",
+                                "properties": {
+                                    "body": {"type": "not-a-json-schema-type"},
+                                },
+                                "required": ["body"],
+                            },
+                        },
+                    },
+                }
+
+        router = PydanticMCARouter()
+        router.mount("remote", InvalidSchemaClient())
+
+        @router.register("/bad", delegate_to="remote.get_bad")
+        def get_bad() -> dict[str, Any]:
+            return {}
+
+        with self.assertRaises(MCAError) as context:
+            router.dispatch("get_context", params={"operation": "get_bad"})
+        self.assertEqual(context.exception.code, "invalid_schema")
+        self.assertEqual(context.exception.field, "response_schema")
+
     def test_operations_can_be_registered_by_name_without_a_route(self):
         router = PydanticMCARouter()
 

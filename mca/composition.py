@@ -7,12 +7,13 @@ from collections.abc import Callable, Mapping
 from copy import deepcopy
 from typing import Any, Protocol
 
+from jsonschema.exceptions import SchemaError
 from pydantic import ValidationError
 
 from .base import MCAError, RegisteredRoute
 from .models import APIRouteSchemaOut, MCADiscoveryOut, MCAResponseOut
 from .schema import (materialize_schema, merge_remote_fragment,
-                     rewrite_component_refs)
+                     rewrite_component_refs, validate_discovery_envelope)
 
 
 class MCAClient(Protocol):
@@ -561,9 +562,23 @@ class MCACompositionMixin:
         composed["response_schema"] = response_schema
 
     def _materialize_composed_schema(self, schema: dict[str, Any]) -> dict[str, Any]:
-        """Make request and response schemas self-contained before serialization."""
+        """Publish self-contained, valid JSON Schema envelopes."""
         for key in ("request_schema", "response_schema"):
-            schema[key] = self._materialize_schema(schema.get(key))
+            materialized = self._materialize_schema(schema.get(key))
+            if materialized is not None:
+                try:
+                    validate_discovery_envelope(
+                        materialized,
+                        response=key == "response_schema",
+                    )
+                except SchemaError as exc:
+                    raise MCAError(
+                        "invalid_schema",
+                        f"Operation discovery contains an invalid {key}.",
+                        key,
+                        500,
+                    ) from exc
+            schema[key] = materialized
         return schema
 
     def _compose_route_schema(

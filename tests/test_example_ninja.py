@@ -5,6 +5,8 @@ from types import SimpleNamespace
 from unittest import IsolatedAsyncioTestCase, TestCase
 
 from django.conf import settings
+from jsonschema import Draft202012Validator
+from jsonschema.exceptions import ValidationError as JSONSchemaValidationError
 
 if not settings.configured:
     settings.configure(
@@ -28,6 +30,7 @@ if str(EXAMPLE_ROOT) not in sys.path:
 
 from demo.api import public_mca
 from demo.asgi import application as demo_application
+from demo.private import private_router
 from demo.rpc import billing_rpc
 from mcp.server.mcpserver.context import Context
 from mcp.server.mcpserver.exceptions import ToolError
@@ -39,6 +42,42 @@ class NinjaCompositionExampleTests(TestCase):
     def setUp(self):
         billing_rpc.calls.clear()
         public_mca.clear_remote_schema_cache()
+
+    def test_all_discovery_envelopes_are_valid_json_schemas(self):
+        for router in (public_mca, private_router):
+            for route in router.routes():
+                if route.operation == "get_context":
+                    continue
+                operation = router._route_schema(route)
+                if not isinstance(operation, dict):
+                    operation = operation.model_dump()
+                for key in ("request_schema", "response_schema"):
+                    schema = operation[key]
+                    if schema is None:
+                        continue
+                    with self.subTest(router=type(router).__name__, operation=route.operation, schema=key):
+                        Draft202012Validator.check_schema(schema)
+                        self.assertNotIn("$schema", schema)
+                        self.assertEqual(schema["type"], "object")
+                        json.dumps(schema)
+
+        create = public_mca._get_context(None, "make_public_invoice")["operations"]["make_public_invoice"]
+        request_validator = Draft202012Validator(create["request_schema"])
+        request_validator.validate({"body": {"customer": "Example", "total": 42.5}})
+        with self.assertRaises(JSONSchemaValidationError):
+            request_validator.validate({"body": {"total": 42.5}})
+
+        response_validator = Draft202012Validator(create["response_schema"])
+        response_validator.validate({
+            "body": {
+                "invoice_id": 8,
+                "customer": "Example",
+                "total": 42.5,
+                "status": "open",
+            },
+        })
+        with self.assertRaises(JSONSchemaValidationError):
+            response_validator.validate({"body": {"invoice_id": 8}})
 
     def test_public_discovery_exposes_only_explicit_public_operation(self):
         discovery = public_mca._get_context(None, None)
